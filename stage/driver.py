@@ -48,68 +48,6 @@ class Stage:
             logger.exception("Failed to connect to Arduino stage on %s", port)
             self.ser = None
 
-    def _flush(self, clear_input: bool = True, clear_output: bool = False) -> bool:
-        """
-        Synchronize the serial link and optionally clear stale buffered data.
-
-        Note:
-            ``pyserial.flush()`` only waits for pending writes to finish. It
-            does not clear unread incoming bytes. This helper drains outgoing
-            commands first, then clears buffers when requested.
-        """
-
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return False
-
-        try:
-            self.ser.flush()
-
-            if clear_input:
-                self.ser.reset_input_buffer()
-
-            if clear_output:
-                self.ser.reset_output_buffer()
-
-            logger.info(
-                "Serial synchronized (input_cleared=%s, output_cleared=%s)",
-                clear_input,
-                clear_output,
-            )
-            return True
-
-        except serial.SerialException:
-            logger.exception("Serial flush failed")
-            return False
-
-    def _is_busy(self) -> str | None:
-        """Query GRBL status to check whether a motion command is still running."""
-
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return None
-
-        try:
-            time.sleep(0.3)
-            self.ser.write(b"?")
-            time.sleep(0.3)
-            status = self.ser.readline().decode("utf-8").strip()
-            return status
-        except Exception:
-            logger.exception("Failed to query Arduino stage status")
-            return None
-
-    def _change_scale(self, new_scale: float) -> None:
-        """
-        Change the scale factor for movement commands.
-
-        This is useful for different zoom levels of the optics.
-        """
-
-        old_scale = self.scale
-        self.scale = new_scale
-        logger.info("Scaling changed from %s to %s", old_scale, self.scale)
-
     def set_zero(self) -> None:
         """
         Set the current position of the stage as the new zero reference point.
@@ -344,20 +282,6 @@ class Stage:
         except Exception:
             logger.exception("Failed to move Arduino stage Z-axis")
 
-    def _move_z_infinite(self, max_height: float = 300, feedrate: int = 450) -> None:
-        """
-        Move the stage along the Z-axis continuously until externally stopped.
-        """
-
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
-        try:
-            gcode = f"G91\nG1 Z{max_height} F{feedrate}\nG90\n"
-            self.ser.write(gcode.encode())
-        except Exception:
-            logger.exception("Failed to start continuous Arduino stage Z motion")
-
     def abort_motion(self) -> None:
         """
         Abort the current motion immediately without resuming previous commands.
@@ -391,6 +315,95 @@ class Stage:
             logger.info("Hold cleared without resuming previous motion")
         except Exception:
             logger.exception("Failed to abort Arduino stage motion")
+
+    def disconnect(self) -> None:
+        """Disconnect from the Arduino stage after moving to zero."""
+
+        if self.ser is None or not self.ser.is_open:
+            logger.error("Arduino stage is not connected")
+            return
+        try:
+            self.go_to_zero()
+            self.ser.close()
+            logger.info("Arduino stage disconnected")
+        except Exception:
+            logger.exception("Failed to disconnect Arduino stage")
+
+    def _flush(self, clear_input: bool = True, clear_output: bool = False) -> bool:
+        """
+        Synchronize the serial link and optionally clear stale buffered data.
+
+        Note:
+            ``pyserial.flush()`` only waits for pending writes to finish. It
+            does not clear unread incoming bytes. This helper drains outgoing
+            commands first, then clears buffers when requested.
+        """
+
+        if self.ser is None or not self.ser.is_open:
+            logger.error("Arduino stage is not connected")
+            return False
+
+        try:
+            self.ser.flush()
+
+            if clear_input:
+                self.ser.reset_input_buffer()
+
+            if clear_output:
+                self.ser.reset_output_buffer()
+
+            logger.info(
+                "Serial synchronized (input_cleared=%s, output_cleared=%s)",
+                clear_input,
+                clear_output,
+            )
+            return True
+
+        except serial.SerialException:
+            logger.exception("Serial flush failed")
+            return False
+
+    def _is_busy(self) -> str | None:
+        """Query GRBL status to check whether a motion command is still running."""
+
+        if self.ser is None or not self.ser.is_open:
+            logger.error("Arduino stage is not connected")
+            return None
+
+        try:
+            time.sleep(0.3)
+            self.ser.write(b"?")
+            time.sleep(0.3)
+            status = self.ser.readline().decode("utf-8").strip()
+            return status
+        except Exception:
+            logger.exception("Failed to query Arduino stage status")
+            return None
+
+    def _change_scale(self, new_scale: float) -> None:
+        """
+        Change the scale factor for movement commands.
+
+        This is useful for different zoom levels of the optics.
+        """
+
+        old_scale = self.scale
+        self.scale = new_scale
+        logger.info("Scaling changed from %s to %s", old_scale, self.scale)
+
+    def _move_z_infinite(self, max_height: float = 300, feedrate: int = 450) -> None:
+        """
+        Move the stage along the Z-axis continuously until externally stopped.
+        """
+
+        if self.ser is None or not self.ser.is_open:
+            logger.error("Arduino stage is not connected")
+            return
+        try:
+            gcode = f"G91\nG1 Z{max_height} F{feedrate}\nG90\n"
+            self.ser.write(gcode.encode())
+        except Exception:
+            logger.exception("Failed to start continuous Arduino stage Z motion")
 
     def _reconnect(self) -> None:
         """
@@ -428,19 +441,6 @@ class Stage:
             logger.info("Arduino stage response: %s", status)
         except Exception:
             logger.exception("Failed to send raw G-code to Arduino stage")
-
-    def disconnect(self) -> None:
-        """Disconnect from the Arduino stage after moving to zero."""
-
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
-        try:
-            self.go_to_zero()
-            self.ser.close()
-            logger.info("Arduino stage disconnected")
-        except Exception:
-            logger.exception("Failed to disconnect Arduino stage")
 
 
 stage = Stage

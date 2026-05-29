@@ -10,7 +10,7 @@ import psutil
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from puda import EdgeNatsClient, EdgeRunner
 
-from stage import Stage
+from driver import Stage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,7 +58,6 @@ async def main():
         baudrate=config.stage_baudrate,
         multiplier=config.stage_multiplier,
     )
-    driver.startup()
     logger.info("Machine driver initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)
@@ -69,7 +68,7 @@ async def main():
 
     async def telemetry_handler():
         await edge_nats_client.publish_heartbeat()
-        await edge_nats_client.publish_position(driver.get_position())
+        await edge_nats_client.publish_position(driver.get_current_position())
         sensor = None
         if hasattr(psutil, "sensors_temperatures"):
             all_temps = psutil.sensors_temperatures() or {}

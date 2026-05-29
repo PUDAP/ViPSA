@@ -57,21 +57,6 @@ class Keithley707B:
         self._dev = None
         self._open_device()
 
-    # Machine-template lifecycle methods
-
-    def shutdown(self) -> bool:
-        """Close the switch VISA session."""
-        self.close_session()
-        return True
-
-    def home(self) -> bool:
-        """No homing sequence is defined for this switch matrix."""
-        return True
-
-    def get_position(self) -> dict[str, float]:
-        """Return a fixed position payload for edge telemetry."""
-        return {"x": 0.0, "y": 0.0, "z": 0.0}
-
     # Public driver interface
 
     def close_channel(self, channel: Any) -> None:

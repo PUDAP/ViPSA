@@ -78,44 +78,6 @@ class Zaber:
 
         return self.x1, self.y1
 
-    @staticmethod
-    def _try_optional_axis_command(description: str, command) -> bool:
-        """
-        Run an optional Zaber setup command without failing the connection.
-        """
-
-        try:
-            command()
-            return True
-        except Exception as exc:
-            logger.warning("Skipped Zaber %s: %s", description, exc)
-            return False
-
-    def _prepare_axis(self, axis, axis_label: str) -> None:
-        """
-        Enable and unpark axes when supported by the connected controller.
-
-        Some X-LSQ150A firmware rejects `driver enable`, while movement still
-        works correctly. Treat these setup calls as optional.
-        """
-
-        self._try_optional_axis_command(
-            f"{axis_label} driver enable",
-            lambda: axis.driver_enable(),
-        )
-
-        try:
-            is_parked = axis.is_parked()
-        except Exception as exc:
-            logger.warning("Could not read Zaber %s park state: %s", axis_label, exc)
-            return
-
-        if is_parked:
-            self._try_optional_axis_command(
-                f"{axis_label} unpark",
-                lambda: axis.unpark(),
-            )
-
     def configure_units(
         self,
         distance_units=None,
@@ -131,43 +93,6 @@ class Zaber:
         self.distance_units = distance_units
         self.velocity_units = velocity_units
         self.acceleration_units = acceleration_units
-
-    def _require_axis(self, axis_name: str) -> object:
-        """Return the cached axis object, raising a helpful error if needed."""
-
-        axis = getattr(self, axis_name, None)
-        if axis is None:
-            raise RuntimeError(
-                "Zaber axes are not initialized. Call 'get_devices()' first."
-            )
-        return axis
-
-    @staticmethod
-    def _move(axis, method_name: str, value: float, units=None) -> None:
-        """Call a Zaber move method with either native or explicit units."""
-
-        move_method = getattr(axis, method_name)
-        if units is None:
-            move_method(value, Units.NATIVE)
-            return
-        move_method(value, units)
-
-    @staticmethod
-    def _set_axis_setting(axis, setting_name: str, value: float, units=None) -> None:
-        """Set an axis setting in native units or explicit physical units."""
-
-        if units is None:
-            axis.settings.set(setting_name, value)
-            return
-        axis.settings.set(setting_name, value, units)
-
-    @staticmethod
-    def _get_axis_position(axis, units=None) -> float:
-        """Read an axis position in native units or explicit physical units."""
-
-        if units is None:
-            return axis.get_position(Units.NATIVE)
-        return axis.get_position(units)
 
     def set_holding_current(self, current: int = 50) -> None:
         """
@@ -282,14 +207,6 @@ class Zaber:
             "acceleration_units": self._serialize_units(self.acceleration_units),
         }
 
-    @staticmethod
-    def _serialize_units(units) -> str | None:
-        """Return a JSON-safe representation of a Zaber Units value."""
-
-        if units is None:
-            return None
-        return getattr(units, "name", str(units))
-
     def disconnect(self) -> None:
         """
         Disconnect from the Zaber stages by closing the connection.
@@ -320,5 +237,85 @@ class Zaber:
         self.connection.close()
         logger.info("Connection to Zaber stages is now closed")
 
+    @staticmethod
+    def _try_optional_axis_command(description: str, command) -> bool:
+        """
+        Run an optional Zaber setup command without failing the connection.
+        """
 
-__all__ = ["Zaber", "Units"]
+        try:
+            command()
+            return True
+        except Exception as exc:
+            logger.warning("Skipped Zaber %s: %s", description, exc)
+            return False
+
+    def _prepare_axis(self, axis, axis_label: str) -> None:
+        """
+        Enable and unpark axes when supported by the connected controller.
+
+        Some X-LSQ150A firmware rejects `driver enable`, while movement still
+        works correctly. Treat these setup calls as optional.
+        """
+
+        self._try_optional_axis_command(
+            f"{axis_label} driver enable",
+            lambda: axis.driver_enable(),
+        )
+
+        try:
+            is_parked = axis.is_parked()
+        except Exception as exc:
+            logger.warning("Could not read Zaber %s park state: %s", axis_label, exc)
+            return
+
+        if is_parked:
+            self._try_optional_axis_command(
+                f"{axis_label} unpark",
+                lambda: axis.unpark(),
+            )
+
+    def _require_axis(self, axis_name: str) -> object:
+        """Return the cached axis object, raising a helpful error if needed."""
+
+        axis = getattr(self, axis_name, None)
+        if axis is None:
+            raise RuntimeError(
+                "Zaber axes are not initialized. Call 'get_devices()' first."
+            )
+        return axis
+
+    @staticmethod
+    def _move(axis, method_name: str, value: float, units=None) -> None:
+        """Call a Zaber move method with either native or explicit units."""
+
+        move_method = getattr(axis, method_name)
+        if units is None:
+            move_method(value, Units.NATIVE)
+            return
+        move_method(value, units)
+
+    @staticmethod
+    def _set_axis_setting(axis, setting_name: str, value: float, units=None) -> None:
+        """Set an axis setting in native units or explicit physical units."""
+
+        if units is None:
+            axis.settings.set(setting_name, value)
+            return
+        axis.settings.set(setting_name, value, units)
+
+    @staticmethod
+    def _get_axis_position(axis, units=None) -> float:
+        """Read an axis position in native units or explicit physical units."""
+
+        if units is None:
+            return axis.get_position(Units.NATIVE)
+        return axis.get_position(units)
+
+    @staticmethod
+    def _serialize_units(units) -> str | None:
+        """Return a JSON-safe representation of a Zaber Units value."""
+
+        if units is None:
+            return None
+        return getattr(units, "name", str(units))
