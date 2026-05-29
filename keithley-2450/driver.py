@@ -122,17 +122,9 @@ class Keithley2450:
         func = self._normalize_function(function)
         self._write(f":SOUR:FUNC {func}")
 
-    def set_sense_function(self, function: str | Sequence[str]) -> None:
-        """Enable one or more sense functions.
-
-        The Keithley 2450 can be configured with a single primary sense function.
-        When multiple functions are supplied, the first entry is used.
-        """
-        if isinstance(function, (list, tuple)):
-            selected = function[0]
-        else:
-            selected = function
-        func = self._normalize_function(str(selected))
+    def set_sense_function(self, function: str) -> None:
+        """Select the primary sense function (``VOLT`` or ``CURR``)."""
+        func = self._normalize_function(function)
         self._write(f':SENS:FUNC "{func}"')
 
     def set_source_range(

@@ -53,7 +53,6 @@ async def main():
 
     logger.info("Initializing machine driver")
     driver = Light(port=config.light_port, baudrate=config.light_baudrate)
-    driver.startup()
     logger.info("Machine driver initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)
@@ -64,7 +63,6 @@ async def main():
 
     async def telemetry_handler():
         await edge_nats_client.publish_heartbeat()
-        await edge_nats_client.publish_position(driver.get_position())
         sensor = None
         if hasattr(psutil, "sensors_temperatures"):
             all_temps = psutil.sensors_temperatures() or {}

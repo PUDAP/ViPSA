@@ -15,9 +15,11 @@ Authors
     Shreyas Pethe 2026/04/20
 """
 
+import logging
 import time
-
 import serial
+
+logger = logging.getLogger(__name__)
 
 
 class Light:
@@ -32,17 +34,19 @@ class Light:
 
     def __init__(
         self,
-        port: str = "COM6",
-        baudrate: int = 9600,
+        port: str,
+        baudrate: int,
         timeout: float = 1,
         connection_delay: float = 2.0,
         command_delay: float = 0.5,
+        startup_command: str | None = "off",
     ) -> None:
         """
-        Configure the light controller.
+        Configure the light controller, open the serial link, and initialize.
 
-        This does not open the serial connection. Call `connect()` explicitly
-        when you want to talk to the hardware.
+        Args:
+            startup_command: Command sent after connect (default ``"off"``).
+                Pass ``None`` to skip the startup command.
         """
 
         self.port = port
@@ -51,6 +55,11 @@ class Light:
         self.connection_delay = connection_delay
         self.command_delay = command_delay
         self.ser_lights: serial.Serial | None = None
+
+        if not self.connect():
+            raise RuntimeError(f"Failed to connect to lights on {port}")
+        if not self.initialize(startup_command):
+            raise RuntimeError(f"Failed to initialize lights on {port}")
 
     @property
     def is_connected(self) -> bool:
@@ -76,10 +85,10 @@ class Light:
                 timeout=self.timeout,
             )
             time.sleep(self.connection_delay)
-            print(f"Connected to lights on {self.port}")
+            logger.info("Connected to lights on %s", self.port)
             return True
         except serial.SerialException as exc:
-            print(f"Error connecting to lights on {self.port}: {exc}")
+            logger.error("Error connecting to lights on %s: %s", self.port, exc)
             self.ser_lights = None
             return False
 
@@ -96,7 +105,7 @@ class Light:
         """
 
         if not self.is_connected:
-            print("Error: Not connected to lights. Call 'connect()' first.")
+            logger.error("Not connected to lights. Call connect() first.")
             return False
 
         if startup_command is None:
@@ -117,14 +126,15 @@ class Light:
         """
 
         if command not in self.VALID_COMMANDS:
-            print(
-                f"Error: '{command}' is not a valid light command. "
-                f"Valid commands: {sorted(self.VALID_COMMANDS)}"
+            logger.error(
+                "'%s' is not a valid light command. Valid commands: %s",
+                command,
+                sorted(self.VALID_COMMANDS),
             )
             return False
 
         if not self.is_connected:
-            print("Error: Not connected to lights. Call 'connect()' first.")
+            logger.error("Not connected to lights. Call connect() first.")
             return False
 
         assert self.ser_lights is not None
@@ -133,10 +143,10 @@ class Light:
             self.ser_lights.write(f"{command}\n".encode("utf-8"))
             self.ser_lights.flush()
             time.sleep(self.command_delay)
-            print(f"Command '{command}' sent to lights.")
+            logger.info("Command '%s' sent to lights.", command)
             return True
         except serial.SerialException as exc:
-            print(f"Error sending command '{command}': {exc}")
+            logger.error("Error sending command '%s': %s", command, exc)
             return False
 
     def turn_on(self) -> bool:
@@ -193,8 +203,8 @@ class Light:
                 self.control_lights("off")
             if self.ser_lights is not None:
                 self.ser_lights.close()
-            print("Lights disconnected")
+            logger.info("Lights disconnected")
         except serial.SerialException as exc:
-            print(f"Error disconnecting lights: {exc}")
+            logger.error("Error disconnecting lights: %s", exc)
         finally:
             self.ser_lights = None

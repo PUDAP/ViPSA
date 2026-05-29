@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Sequence
 
 import pyvisa
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_ascii_floats(raw: str) -> list[float]:
@@ -793,8 +796,8 @@ class KeysightB2902B:
             self._close_temp(smu, temporary)
 
         if fallback_to_list_mode:
-            print(
-                "Warning: Keysight native pulse mode returned incomplete readback; "
+            logger.warning(
+                "Keysight native pulse mode returned incomplete readback; "
                 "falling back to timed voltage-list execution."
             )
             return self.source_voltage_measure_current(
