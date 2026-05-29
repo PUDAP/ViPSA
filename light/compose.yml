@@ -1,8 +1,8 @@
 services:
   edge:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: light/Dockerfile
     image: ghcr.io/pudap/light-edge:latest
     container_name: light-edge
     restart: unless-stopped

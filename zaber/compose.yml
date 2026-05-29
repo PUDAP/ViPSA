@@ -1,8 +1,8 @@
 services:
   edge:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: zaber/Dockerfile
     image: ghcr.io/pudap/zaber-edge:latest
     container_name: zaber-edge
     restart: unless-stopped

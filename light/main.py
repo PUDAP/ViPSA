@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 class Config(BaseSettings):
     machine_id: str
     nats_servers: str
-    light_port: str = "/dev/ttyUSB1"
-    light_baudrate: int = 9600
+    light_port: str
+    light_baudrate: int
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parent / ".env",

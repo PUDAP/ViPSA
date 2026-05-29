@@ -206,13 +206,13 @@ class Stage:
         except Exception:
             logger.exception("Failed to move Arduino stage to X/Y position")
 
-    def move_with_lim_by(self, stepsX: float, stepsY: float) -> int:
+    def move_with_lim_by(self, stepsX: float, stepsY: float) -> int | None:
         """
         Move within the stage boundaries.
 
         Returns:
-            int: `-1` when the movement exceeds limits, `0` when not connected,
-            and `None` on success to preserve existing behavior.
+            ``None`` on success, ``-1`` when the movement exceeds limits, and
+            ``0`` when not connected or on failure.
         """
 
         if self.ser is None or not self.ser.is_open:
@@ -246,6 +246,7 @@ class Stage:
             gcode = f"G91\nG1 X{distanceX} Y{distanceY} F{feedrate}\nG90\n"
             self.ser.write(gcode.encode())
             time.sleep(max(abs(distanceX), abs(distanceY)) * 0.15)
+            self.ser.flush()
 
             status = self._is_busy()
             while status is not None and "Run" in status:
@@ -255,8 +256,10 @@ class Stage:
             self.x_pos = final_x
             self.y_pos = final_y
             logger.info("Moved X and Y by %s, %s steps", stepsX, stepsY)
+            return None
         except Exception:
             logger.exception("Failed to move Arduino stage within limits")
+            return 0
 
     def move_z_by(self, height: float, feedrate: int = 450) -> None:
         """

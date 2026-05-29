@@ -1,8 +1,8 @@
 services:
   edge:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: stage/Dockerfile
     image: ghcr.io/pudap/stage-edge:latest
     container_name: stage-edge
     restart: unless-stopped

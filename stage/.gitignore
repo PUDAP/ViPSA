@@ -18,6 +18,7 @@ out-tsc
 # dependencies
 node_modules
 .venv
+uv.lock
 
 # IDEs and editors
 /.idea

@@ -1,8 +1,8 @@
 services:
   edge:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: keysight-b2902b/Dockerfile
     image: ghcr.io/pudap/keysight-b2902b-edge:latest
     container_name: keysight-b2902b-edge
     restart: unless-stopped

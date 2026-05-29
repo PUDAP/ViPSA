@@ -11,9 +11,12 @@ RUN apt-get update && apt-get install -y \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 COPY pyproject.toml uv.lock ./
+COPY stage/pyproject.toml stage/pyproject.toml
 
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --package stage-edge
 
-COPY . .
+COPY stage/ stage/
+
+WORKDIR /app/stage
 
 CMD ["uv", "run", "python", "main.py"]

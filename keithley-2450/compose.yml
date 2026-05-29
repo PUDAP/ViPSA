@@ -1,8 +1,8 @@
 services:
   edge:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: keithley-2450/Dockerfile
     image: ghcr.io/pudap/keithley-2450-edge:latest
     container_name: keithley-2450-edge
     restart: unless-stopped

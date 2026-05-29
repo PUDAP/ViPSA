@@ -1,0 +1,16 @@
+[project]
+name = "vipsa"
+version = "0.1.0"
+description = "ViPSA PUDA edge services for instrument control."
+readme = "README.md"
+requires-python = ">=3.14"
+
+[tool.uv.workspace]
+members = [
+    "light",
+    "stage",
+    "zaber",
+    "keithley-2450",
+    "keithley-707b",
+    "keysight-b2902b",
+]
