@@ -16,7 +16,6 @@ Authors
 """
 
 import time
-from typing import Optional
 
 import serial
 
@@ -51,7 +50,7 @@ class Light:
         self.timeout = timeout
         self.connection_delay = connection_delay
         self.command_delay = command_delay
-        self.ser_lights: Optional[serial.Serial] = None
+        self.ser_lights: serial.Serial | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -84,7 +83,7 @@ class Light:
             self.ser_lights = None
             return False
 
-    def initialize(self, startup_command: Optional[str] = "off") -> bool:
+    def initialize(self, startup_command: str | None = "off") -> bool:
         """
         Initialize the controller after connecting.
 

@@ -58,7 +58,6 @@ async def main():
         address=config.keysight_b2902b_address,
         channel=config.keysight_b2902b_channel,
     )
-    driver.startup()
     logger.info("Machine driver initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)

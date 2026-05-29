@@ -56,7 +56,6 @@ async def main():
         device_no=config.keithley_2450_device_no,
         address=config.keithley_2450_address,
     )
-    driver.startup()
     logger.info("Machine driver initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)

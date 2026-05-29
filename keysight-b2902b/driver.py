@@ -8,75 +8,6 @@ from typing import Any, Sequence
 import pyvisa
 
 
-class _NullVisaSession:
-    """No-op VISA session used only when PyVISA is unavailable in test imports.
-        Usable for dry runs and simulations
-        """
-
-    def __init__(self, address: str) -> None:
-        """Store connection metadata for the no-op test session."""
-        self.address = address
-        self.timeout = None
-        self.read_termination = "\n"
-        self.write_termination = "\n"
-        self.writes: list[str] = []
-
-    def write(self, command: str) -> None:
-        """Record a command without talking to real hardware."""
-        self.writes.append(command)
-
-    def query(self, command: str) -> str:
-        """Record a query and return canned responses for common SCPI calls."""
-        self.writes.append(command)
-        if command == "*IDN?":
-            return "NO_PYVISA,KEYSIGHTB2902B,0,0"
-        if command == "*OPC?":
-            return "1"
-        if command.startswith(":SYST:ERR?"):
-            return "0,No error"
-        if command.startswith(":ROUT:TERM?"):
-            return "FRON"
-        if command.startswith(":MEAS:VOLT?"):
-            return "0"
-        if command.startswith(":MEAS:CURR?"):
-            return "0"
-        if command.startswith(":FETC:ARR:SOUR"):
-            return "0"
-        if command.startswith(":FETC:ARR:VOLT"):
-            return "0"
-        if command.startswith(":FETC:ARR:CURR"):
-            return "0"
-        if command.startswith(":FETC:ARR:TIME"):
-            return "0"
-        if command.startswith(":READ?"):
-            return "0,0"
-        return "0"
-
-    def close(self) -> None:
-        """Mirror the VISA close API for dry-run callers."""
-        return None
-
-
-class _NullResourceManager:
-    """No-op resource manager used when tests stub ``pyvisa`` without a backend."""
-
-    def list_resources(self) -> tuple[str, ...]:
-        """Return a fake VISA resource list for import-time checks."""
-        return ("USB0::FAKE::INSTR",)
-
-    def open_resource(self, address: str) -> _NullVisaSession:
-        """Create a no-op session for the requested instrument address."""
-        return _NullVisaSession(address)
-
-
-def _resource_manager() -> Any:
-    """Return a real ResourceManager when available, else a no-op test fallback."""
-    factory = getattr(pyvisa, "ResourceManager", None)
-    if callable(factory):
-        return factory()
-    return _NullResourceManager()
-
-
 def _parse_ascii_floats(raw: str) -> list[float]:
     """Parse an ASCII comma-separated response into floats."""
     text = str(raw).strip()
@@ -146,172 +77,45 @@ class KeysightB2902B:
 
     def __init__(
         self,
-        device_no: int = 0,
-        address: str | None = None,
+        device_no: int,
+        address: str,
+        channel: int,
         switch: Any | None = None,
         switch_channel: Any | None = None,
         connect_switch: bool = False,
-        channel: int = 1,
     ) -> None:
-        """Initialize the driver and open the main VISA session."""
-        self.rm = _resource_manager()
-        address_list = list(self.rm.list_resources())
-        self.address = address if address is not None else address_list[device_no]
+        """Initialize the driver, open the session, and apply the default setup."""
+        self.rm = pyvisa.ResourceManager()
+        self.device_no = int(device_no)
+        self.address = address
         self.switch = switch
         self.switch_channel = switch_channel
         self.switch_profile = "keysight"
+        self.connect_switch = bool(connect_switch)
         self.channel = int(channel)
-        self.smu = self._open_resource(self.address, timeout=10000)
+        self.smu = None
 
-        if connect_switch and self.switch is not None:
+        self._connect(device_no=self.device_no)
+        if self.connect_switch and self.switch is not None:
             self.connect_switch_path()
-
         self.initialize()
 
-    ######---INTERNAL UTILITY METHODS---######
+    # Machine-template lifecycle methods
 
-    @property
-    def _channel_suffix(self) -> str:
-        """Return the numeric channel suffix used by the active channel."""
-        return str(self.channel)
+    def shutdown(self) -> bool:
+        """Release the VISA session and disconnect any switch path."""
+        self.close_session()
+        return True
 
-    @property
-    def _channel_list(self) -> str:
-        """Return the SCPI channel-list token for the active channel."""
-        return f"(@{self.channel})"
+    def home(self) -> bool:
+        """No homing sequence is defined for this SMU."""
+        return True
 
-    def _open_resource(self, adr: str | None = None, timeout: int = 10000) -> Any:
-        """Open a VISA resource and apply common session settings."""
-        target = self.address if adr is None else adr
-        smu = self.rm.open_resource(target)
-        smu.read_termination = "\n"
-        smu.write_termination = "\n"
-        smu.timeout = timeout
-        return smu
+    def get_position(self) -> dict[str, float]:
+        """Return a fixed position payload for edge telemetry."""
+        return {"x": 0.0, "y": 0.0, "z": 0.0}
 
-    def _get_session(self, adr: str | None = None, timeout: int = 10000) -> tuple[Any, bool]:
-        """Return the main session or open a short-lived one for another address."""
-        target = self.address if adr is None else adr
-        if target == self.address:
-            if self.smu is None:
-                self.smu = self._open_resource(self.address, timeout=timeout)
-            else:
-                self.smu.timeout = timeout
-            return self.smu, False
-        return self._open_resource(target, timeout=timeout), True
-
-    def _close_temp(self, smu, temporary: bool) -> None:
-        """Close a temporary VISA session."""
-        if temporary and smu is not None:
-            smu.close()
-
-    def _normalize_function(self, function: str) -> str:
-        """Normalize function tokens such as ``VOLT`` and ``CURR``."""
-        text = str(function).strip().upper()
-        if text.startswith("V"):
-            return "VOLT"
-        if text.startswith("I") or text.startswith("C"):
-            return "CURR"
-        raise ValueError(f"Unsupported function '{function}'.")
-
-    def _normalize_function_list(self, function: str | Sequence[str]) -> tuple[str, ...]:
-        """Normalize a function or function list for ``:SENS:FUNC`` commands."""
-        if isinstance(function, str):
-            raw_items = [item for item in function.split(",") if item.strip()]
-        else:
-            raw_items = list(function)
-
-        normalized: list[str] = []
-        for item in raw_items:
-            token = self._normalize_function(str(item))
-            if token not in normalized:
-                normalized.append(token)
-
-        if not normalized:
-            raise ValueError("At least one sense function is required.")
-        return tuple(normalized)
-
-    def _format_function_list(self, functions: Sequence[str]) -> str:
-        """Format normalized functions for SCPI sense commands."""
-        return ",".join(f'"{item}"' for item in functions)
-
-    def _ensure_front_terminal(self, smu) -> None:
-        """Best-effort selection of the Keysight front terminals."""
-        try:
-            smu.write(":ROUT:TERM FRON")
-        except Exception:
-            pass
-
-    def _apply_default_state(self, smu) -> None:
-        """Reset the channel into the ViPSA default front-terminal state."""
-        smu.write("*RST")
-        smu.write("*CLS")
-        self._ensure_front_terminal(smu)
-        smu.write(f":SOUR{self._channel_suffix}:FUNC:MODE VOLT")
-        smu.write(f':SENS{self._channel_suffix}:FUNC "CURR","VOLT"')
-        smu.write(f":OUTP{self._channel_suffix} OFF")
-
-    def _query_scalar(self, command: str, smu=None) -> float | None:
-        """Query one scalar response and parse the first numeric field."""
-        dev = self.smu if smu is None else smu
-        return _parse_scalar(dev.query(command).strip())
-
-    def _fetch_ascii_array(self, field: str, smu=None) -> list[float]:
-        """Fetch one Keysight array field such as source, current, or time."""
-        dev = self.smu if smu is None else smu
-        name = str(field).strip().upper()
-        if name in {"SOUR", "SOURCE"}:
-            command = f":FETC:ARR:SOUR? {self._channel_list}"
-        elif name in {"CURR", "CURRENT"}:
-            command = f":FETC:ARR:CURR? {self._channel_list}"
-        elif name in {"VOLT", "VOLTAGE"}:
-            command = f":FETC:ARR:VOLT? {self._channel_list}"
-        elif name in {"TIME", "TIM"}:
-            command = f":FETC:ARR:TIME? {self._channel_list}"
-        else:
-            raise ValueError(f"Unsupported fetch field '{field}'.")
-        return _parse_ascii_floats(dev.query(command).strip())
-
-    def _configure_simple_read(
-        self,
-        source_function: str,
-        sense_function: str | Sequence[str],
-        smu,
-    ) -> None:
-        """Apply a simple single-channel source/measure pairing."""
-        src = self._normalize_function(source_function)
-        sense_tokens = self._normalize_function_list(sense_function)
-        suffix = self._channel_suffix
-        smu.write(f":SOUR{suffix}:FUNC:MODE {src}")
-        smu.write(f':SENS{suffix}:FUNC {self._format_function_list(sense_tokens)}')
-
-    def _measure_spot_voltage_current(self, smu=None) -> tuple[float | None, float | None]:
-        """Measure one voltage/current pair using explicit spot-measure queries."""
-        dev = self.smu if smu is None else smu
-        try:
-            voltage = self._query_scalar(f":MEAS:VOLT? {self._channel_list}", smu=dev)
-            current = self._query_scalar(f":MEAS:CURR? {self._channel_list}", smu=dev)
-            if voltage is not None or current is not None:
-                return voltage, current
-        except Exception:
-            pass
-
-        try:
-            response = dev.query(f":READ? {self._channel_list}").strip()
-        except Exception:
-            return None, None
-
-        values = _parse_ascii_floats(response)
-        voltage = values[0] if len(values) >= 1 else None
-        current = values[1] if len(values) >= 2 else None
-        return voltage, current
-
-    def _estimate_pulse_nplc(self, pulse_width_s: float) -> float:
-        """Choose a fast pulse-friendly NPLC that samples well inside the pulse width."""
-        pulse_width = max(0.0, float(pulse_width_s))
-        return max(0.001, min(0.1, pulse_width * 10.0))
-
-    ######---PUBLIC DRIVER INTERFACE---######
+    # Public driver interface
 
     def initialize(self) -> "KeysightB2902B":
         """Apply a conservative default state for lab automation."""
@@ -322,58 +126,12 @@ class KeysightB2902B:
             self._close_temp(smu, temporary)
         return self
 
-    def _write(self, command: str, adr: str | None = None) -> None:
-        """Send one SCPI command."""
-        smu, temporary = self._get_session(adr=adr, timeout=10000)
-        try:
-            smu.write(command)
-        finally:
-            self._close_temp(smu, temporary)
-
-    def _query(self, command: str, adr: str | None = None) -> str:
-        """Send one SCPI query and return its stripped response."""
-        smu, temporary = self._get_session(adr=adr, timeout=10000)
-        try:
-            return smu.query(command).strip()
-        finally:
-            self._close_temp(smu, temporary)
-
     def identify(self) -> str:
         """Return the instrument ID string.
         Can be used for quick connection check and identification.
         
         Example response: Keysight Technologies,B2901BL,MY61390645,5.0.2029.1911"""
         return self._query("*IDN?")
-
-    def connect(
-        self,
-        address: str | None = None,
-        device_no: int = 0,
-    ) -> "KeysightB2902B":
-        """Open or reopen the persistent Keysight VISA session.
-        NOTE: You need to configure the device number, since there are 3 equipments 
-        connected via pyvisa, and the address is not always the same. 
-
-        The device number is used to select the address from the list of available resources.
-        As per the current configuration, the device number should be set to 2 to connect to the B2902B,"""
-
-        target = address
-        if target is None:
-            if self.address is not None:
-                target = self.address
-            else:
-                target = list(self.rm.list_resources())[device_no]
-
-        if self.smu is not None and target != self.address:
-            try:
-                self.smu.close()
-            finally:
-                self.smu = None
-
-        self.address = target
-        if self.smu is None:
-            self.smu = self._open_resource(self.address, timeout=10000)
-        return self
 
     def clear(self) -> "KeysightB2902B":
         """Clear the Keysight status and error queues."""
@@ -546,13 +304,6 @@ class KeysightB2902B:
         finally:
             self.smu = None
 
-    def sync(self, SMU: Any | None = None) -> Any:
-        """Wait for operation completion using ``*OPC?``.
-         Can be used with the main session or a temporary one passed as an argument."""
-        
-        dev = self.smu if SMU is None else SMU
-        return dev.query("*OPC?").strip()
-
     def get_error(self, SMU: Any | None = None) -> list[str]:
         """Return all currently queued instrument errors.
         Can be used with the main session or a temporary one passed as an argument."""
@@ -577,18 +328,6 @@ class KeysightB2902B:
             smu.write(f":OUTP{self._channel_suffix} OFF")
         finally:
             self._close_temp(smu, temporary)
-
-    def _prepare_for_route_change(self) -> None:
-        """Best-effort safety step before switch-routing changes."""
-        try:
-            self.abort_measurement()
-            return
-        except Exception:
-            pass
-        try:
-            self.stop_output()
-        except Exception:
-            pass
 
     def abort_measurement(self, adr: str | None = None) -> None:
         """Abort active operations and leave the output off."""
@@ -1069,19 +808,202 @@ class KeysightB2902B:
             )
         return []
 
-    def startup(self) -> bool:
-        """Start the edge driver. Connection is established in ``__init__``."""
-        return True
+    # Internal utility methods
 
-    def shutdown(self) -> bool:
-        """Release the VISA session and disconnect any switch path."""
-        self.close_session()
-        return True
+    @property
+    def _channel_suffix(self) -> str:
+        """Return the numeric channel suffix used by the active channel."""
+        return str(self.channel)
 
-    def home(self) -> bool:
-        """No homing sequence is defined for this SMU."""
-        return True
+    @property
+    def _channel_list(self) -> str:
+        """Return the SCPI channel-list token for the active channel."""
+        return f"(@{self.channel})"
 
-    def get_position(self) -> dict[str, float]:
-        """Return a fixed position payload for edge telemetry."""
-        return {"x": 0.0, "y": 0.0, "z": 0.0}
+    def _open_resource(self, adr: str | None = None, timeout: int = 10000) -> Any:
+        """Open a VISA resource and apply common session settings."""
+        target = self.address if adr is None else adr
+        smu = self.rm.open_resource(target)
+        smu.read_termination = "\n"
+        smu.write_termination = "\n"
+        smu.timeout = timeout
+        return smu
+
+    def _get_session(self, adr: str | None = None, timeout: int = 10000) -> tuple[Any, bool]:
+        """Return the main session or open a short-lived one for another address."""
+        target = self.address if adr is None else adr
+        if target == self.address:
+            if self.smu is None:
+                self.smu = self._open_resource(self.address, timeout=timeout)
+            else:
+                self.smu.timeout = timeout
+            return self.smu, False
+        return self._open_resource(target, timeout=timeout), True
+
+    def _close_temp(self, smu, temporary: bool) -> None:
+        """Close a temporary VISA session."""
+        if temporary and smu is not None:
+            smu.close()
+
+    def _normalize_function(self, function: str) -> str:
+        """Normalize function tokens such as ``VOLT`` and ``CURR``."""
+        text = str(function).strip().upper()
+        if text.startswith("V"):
+            return "VOLT"
+        if text.startswith("I") or text.startswith("C"):
+            return "CURR"
+        raise ValueError(f"Unsupported function '{function}'.")
+
+    def _normalize_function_list(self, function: str | Sequence[str]) -> tuple[str, ...]:
+        """Normalize a function or function list for ``:SENS:FUNC`` commands."""
+        if isinstance(function, str):
+            raw_items = [item for item in function.split(",") if item.strip()]
+        else:
+            raw_items = list(function)
+
+        normalized: list[str] = []
+        for item in raw_items:
+            token = self._normalize_function(str(item))
+            if token not in normalized:
+                normalized.append(token)
+
+        if not normalized:
+            raise ValueError("At least one sense function is required.")
+        return tuple(normalized)
+
+    def _format_function_list(self, functions: Sequence[str]) -> str:
+        """Format normalized functions for SCPI sense commands."""
+        return ",".join(f'"{item}"' for item in functions)
+
+    def _ensure_front_terminal(self, smu) -> None:
+        """Best-effort selection of the Keysight front terminals."""
+        try:
+            smu.write(":ROUT:TERM FRON")
+        except Exception:
+            pass
+
+    def _apply_default_state(self, smu) -> None:
+        """Reset the channel into the ViPSA default front-terminal state."""
+        smu.write("*RST")
+        smu.write("*CLS")
+        self._ensure_front_terminal(smu)
+        smu.write(f":SOUR{self._channel_suffix}:FUNC:MODE VOLT")
+        smu.write(f':SENS{self._channel_suffix}:FUNC "CURR","VOLT"')
+        smu.write(f":OUTP{self._channel_suffix} OFF")
+
+    def _query_scalar(self, command: str, smu=None) -> float | None:
+        """Query one scalar response and parse the first numeric field."""
+        dev = self.smu if smu is None else smu
+        return _parse_scalar(dev.query(command).strip())
+
+    def _fetch_ascii_array(self, field: str, smu=None) -> list[float]:
+        """Fetch one Keysight array field such as source, current, or time."""
+        dev = self.smu if smu is None else smu
+        name = str(field).strip().upper()
+        if name in {"SOUR", "SOURCE"}:
+            command = f":FETC:ARR:SOUR? {self._channel_list}"
+        elif name in {"CURR", "CURRENT"}:
+            command = f":FETC:ARR:CURR? {self._channel_list}"
+        elif name in {"VOLT", "VOLTAGE"}:
+            command = f":FETC:ARR:VOLT? {self._channel_list}"
+        elif name in {"TIME", "TIM"}:
+            command = f":FETC:ARR:TIME? {self._channel_list}"
+        else:
+            raise ValueError(f"Unsupported fetch field '{field}'.")
+        return _parse_ascii_floats(dev.query(command).strip())
+
+    def _configure_simple_read(
+        self,
+        source_function: str,
+        sense_function: str | Sequence[str],
+        smu,
+    ) -> None:
+        """Apply a simple single-channel source/measure pairing."""
+        src = self._normalize_function(source_function)
+        sense_tokens = self._normalize_function_list(sense_function)
+        suffix = self._channel_suffix
+        smu.write(f":SOUR{suffix}:FUNC:MODE {src}")
+        smu.write(f':SENS{suffix}:FUNC {self._format_function_list(sense_tokens)}')
+
+    def _measure_spot_voltage_current(self, smu=None) -> tuple[float | None, float | None]:
+        """Measure one voltage/current pair using explicit spot-measure queries."""
+        dev = self.smu if smu is None else smu
+        try:
+            voltage = self._query_scalar(f":MEAS:VOLT? {self._channel_list}", smu=dev)
+            current = self._query_scalar(f":MEAS:CURR? {self._channel_list}", smu=dev)
+            if voltage is not None or current is not None:
+                return voltage, current
+        except Exception:
+            pass
+
+        try:
+            response = dev.query(f":READ? {self._channel_list}").strip()
+        except Exception:
+            return None, None
+
+        values = _parse_ascii_floats(response)
+        voltage = values[0] if len(values) >= 1 else None
+        current = values[1] if len(values) >= 2 else None
+        return voltage, current
+
+    def _estimate_pulse_nplc(self, pulse_width_s: float) -> float:
+        """Choose a fast pulse-friendly NPLC that samples well inside the pulse width."""
+        pulse_width = max(0.0, float(pulse_width_s))
+        return max(0.001, min(0.1, pulse_width * 10.0))
+
+    def _write(self, command: str, adr: str | None = None) -> None:
+        """Send one SCPI command."""
+        smu, temporary = self._get_session(adr=adr, timeout=10000)
+        try:
+            smu.write(command)
+        finally:
+            self._close_temp(smu, temporary)
+
+    def _query(self, command: str, adr: str | None = None) -> str:
+        """Send one SCPI query and return its stripped response."""
+        smu, temporary = self._get_session(adr=adr, timeout=10000)
+        try:
+            return smu.query(command).strip()
+        finally:
+            self._close_temp(smu, temporary)
+
+    def _connect(
+        self,
+        address: str | None = None,
+        device_no: int | None = None,
+    ) -> "KeysightB2902B":
+        """Open or reopen the persistent Keysight VISA session."""
+        target = address
+        if target is None:
+            if self.address is not None:
+                target = self.address
+            else:
+                target = list(self.rm.list_resources())[self.device_no if device_no is None else device_no]
+
+        if self.smu is not None and target != self.address:
+            try:
+                self.smu.close()
+            finally:
+                self.smu = None
+
+        self.address = target
+        if self.smu is None:
+            self.smu = self._open_resource(self.address, timeout=10000)
+        return self
+
+    def _prepare_for_route_change(self) -> None:
+        """Best-effort safety step before switch-routing changes."""
+        try:
+            self.abort_measurement()
+            return
+        except Exception:
+            pass
+        try:
+            self.stop_output()
+        except Exception:
+            pass
+
+    def _sync(self, SMU: Any | None = None) -> Any:
+        """Wait for operation completion using ``*OPC?``."""
+        dev = self.smu if SMU is None else SMU
+        return dev.query("*OPC?").strip()

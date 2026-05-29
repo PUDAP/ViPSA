@@ -58,7 +58,6 @@ async def main():
         address=config.keithley_707b_address,
         slot=config.keithley_707b_slot,
     )
-    driver.startup()
     logger.info("Machine driver initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)

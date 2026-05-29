@@ -4,7 +4,6 @@ Stage controller for the ViPSA OpenFlexure-based Arduino stage.
 
 import logging
 import time
-from typing import Optional, Tuple
 
 import serial
 
@@ -83,7 +82,7 @@ class Stage:
             logger.exception("Serial flush failed")
             return False
 
-    def _is_busy(self) -> Optional[str]:
+    def _is_busy(self) -> str | None:
         """Query GRBL status to check whether a motion command is still running."""
 
         if self.ser is None or not self.ser.is_open:
@@ -150,7 +149,7 @@ class Stage:
 
     def get_current_position(
         self,
-    ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    ) -> tuple[float | None, float | None, float | None]:
         """
         Return the tracked current stage position as (x, y, z).
 
