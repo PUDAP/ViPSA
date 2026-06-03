@@ -35,7 +35,7 @@ class Zaber:
         acceleration_units=None,
     ) -> None:
         """
-        Connect to the Zaber stages and detect connected devices.
+        Connect to the Zaber stages, detect connected devices, and initialize axes.
 
         The serial port must be passed explicitly. By default, all values are
         sent in the controller's native units.
@@ -54,6 +54,7 @@ class Zaber:
 
         self.x1 = None
         self.y1 = None
+        self.get_devices()
 
     def get_devices(self) -> tuple:
         """
@@ -144,9 +145,9 @@ class Zaber:
         resolved_units = self.distance_units if units is None else units
         self._move(axis, "move_absolute", position, resolved_units)
 
-    def get_current_position(self, units=None) -> tuple:
+    def get_current_position(self, units=None) -> dict[str, float]:
         """
-        Return the current X and Y positions.
+        Return the current X and Y positions as a telemetry payload.
 
         If `units` is omitted, the class distance default is used. When the
         class default is `None`, the controller returns native units.
@@ -158,7 +159,7 @@ class Zaber:
 
         x_pos = self._get_axis_position(x_axis, resolved_units)
         y_pos = self._get_axis_position(y_axis, resolved_units)
-        return x_pos, y_pos
+        return {"x": x_pos, "y": y_pos}
 
     def set_maxspeed_x(self, speed: float, units=None) -> None:
         """Set the X-axis maximum speed."""

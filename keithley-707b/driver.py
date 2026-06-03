@@ -6,9 +6,12 @@ the 707B matrix and intentionally contains no source/measure or protocol logic.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pyvisa
+
+logger = logging.getLogger(__name__)
 
 
 class Keithley707B:
@@ -51,6 +54,8 @@ class Keithley707B:
         """
         self.rm = pyvisa.ResourceManager()
         address_list = list(self.rm.list_resources())
+        logger.info("Found %s VISA resources", len(address_list))
+        logger.debug("VISA resources: %s", address_list)
         self.address = address if address is not None else address_list[device_no]
         self.slot = int(slot)
         self.route_map = dict(self.ROUTE_MAP)

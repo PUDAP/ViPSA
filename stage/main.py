@@ -68,7 +68,8 @@ async def main():
 
     async def telemetry_handler():
         await edge_nats_client.publish_heartbeat()
-        await edge_nats_client.publish_position(driver.get_current_position())
+        x, y, z = driver.get_current_position()
+        await edge_nats_client.publish_position({"x": x, "y": y, "z": z})
         sensor = None
         if hasattr(psutil, "sensors_temperatures"):
             all_temps = psutil.sensors_temperatures() or {}
