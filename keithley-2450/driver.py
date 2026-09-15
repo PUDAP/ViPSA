@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 import time
 
 import pyvisa
+from puda import command
 
 
 def _record(
@@ -40,8 +41,8 @@ def _record(
     }
 
 
-class Keithley2450:
-    """Native SCPI driver for the Keithley 2450.
+class Driver:
+    """Keithley 2450 source-measure unit for DC sourcing and IV measurements.
 
     The class keeps a persistent VISA session and provides thin measurement
     primitives. Higher-level voltage-list splitting lives in
@@ -76,22 +77,26 @@ class Keithley2450:
 
     # Machine-template lifecycle methods
 
+    @command
     def shutdown(self) -> bool:
         """Release the VISA session and disconnect any switch path."""
         self.close_session()
         return True
 
+    @command
     def home(self) -> bool:
         """No homing sequence is defined for this SMU."""
         return True
 
+    @command
     def get_position(self) -> dict[str, float]:
         """Return a fixed position payload for edge telemetry."""
         return {"x": 0.0, "y": 0.0, "z": 0.0}
 
     # Public driver interface
 
-    def initialize(self) -> "Keithley2450":
+    @command
+    def initialize(self) -> dict[str, bool]:
         """Apply a conservative default state suitable for lab automation."""
         self._write("*RST")
         self._write("*CLS")
@@ -100,33 +105,39 @@ class Keithley2450:
         self._write(':SENS:FUNC "CURR"')
         self._write(":SENS:CURR:RANG:AUTO ON")
         self._write(":OUTP OFF")
-        return self
+        return {"ok": True}
 
+    @command
     def identify(self) -> str:
         """Return the instrument ID string."""
         return self._query("*IDN?")
 
-    def clear(self) -> "Keithley2450":
+    @command
+    def clear(self) -> dict[str, bool]:
         """Clear the Keithley status and error queues."""
         self._write("*CLS")
-        return self
+        return {"ok": True}
 
-    def reset(self) -> "Keithley2450":
+    @command
+    def reset(self) -> dict[str, bool]:
         """Reset the Keithley and reapply the ViPSA default setup."""
         self._write("*RST")
         self.clear()
         return self.initialize()
 
+    @command
     def set_source_function(self, function: str) -> None:
         """Select voltage or current source mode."""
         func = self._normalize_function(function)
         self._write(f":SOUR:FUNC {func}")
 
+    @command
     def set_sense_function(self, function: str) -> None:
         """Select the primary sense function (``VOLT`` or ``CURR``)."""
         func = self._normalize_function(function)
         self._write(f':SENS:FUNC "{func}"')
 
+    @command
     def set_source_range(
         self,
         function: str,
@@ -143,6 +154,7 @@ class Keithley2450:
         self._write(f":SOUR:{func}:RANG:AUTO OFF")
         self._write(f":SOUR:{func}:RANG {float(value):.12g}")
 
+    @command
     def set_sense_range(
         self,
         function: str,
@@ -159,6 +171,7 @@ class Keithley2450:
         self._write(f":SENS:{func}:RANG:AUTO OFF")
         self._write(f":SENS:{func}:RANG {float(value):.12g}")
 
+    @command
     def set_protection(self, function: str, value: float) -> None:
         """Configure current or voltage protection / compliance."""
         func = self._normalize_function(function)
@@ -170,16 +183,19 @@ class Keithley2450:
         self._write(f":SENS:VOLT:PROT {numeric:.12g}")
         self._write(f":SOUR:CURR:VLIM {numeric:.12g}")
 
+    @command
     def set_source_level(self, function: str, value: float) -> None:
         """Set the immediate source level for voltage or current."""
         func = self._normalize_function(function)
         self._write(f":SOUR:{func}:LEV {float(value):.12g}")
 
+    @command
     def set_output(self, enabled: bool) -> None:
         """Turn the output on or off."""
         self._write(":OUTP ON" if enabled else ":OUTP OFF")
 
-    def configure_measurement_format(self, functions: str | Sequence[str]) -> None:
+    @command
+    def configure_measurement_format(self, functions: str | list[str]) -> None:
         """Configure the response fields for immediate readback.
 
         The 2450 uses ``:FORM:ELEM`` rather than the Keysight ``:FORM:ELEM:SENS``
@@ -191,6 +207,7 @@ class Keithley2450:
             payload = ",".join(str(item).strip().upper() for item in functions)
         self._write(f":FORM:ELEM {payload}")
 
+    @command
     def query_reading(self) -> str:
         """Query one reading from the active source-measure setup."""
         return self._query(":READ?")
@@ -206,10 +223,12 @@ class Keithley2450:
             errors.append(msg)
         return errors
 
+    @command
     def read_errors(self) -> list[str]:
         """Drain the instrument error queue using the active session."""
         return self.get_error()
 
+    @command
     def connect_switch_path(self) -> None:
         """Connect the assigned switch path if a switch wrapper is available.
 
@@ -232,6 +251,7 @@ class Keithley2450:
         if hasattr(self.switch, "close_channel"):
             self.switch.close_channel(route)
 
+    @command
     def disconnect_switch_path(self) -> None:
         """Open the assigned switch path if a switch wrapper is available.
 
@@ -270,10 +290,12 @@ class Keithley2450:
         """Reset and reinitialize the driver."""
         self.initialize()
 
+    @command
     def stop_output(self) -> None:
         """Turn the output off."""
         self.set_output(False)
 
+    @command
     def abort_measurement(self) -> None:
         """Abort any active operation and leave the output off."""
         try:
@@ -285,6 +307,7 @@ class Keithley2450:
         except Exception:
             pass
 
+    @command
     def hold_voltage_measure_current(
         self,
         voltage: float,
@@ -350,6 +373,7 @@ class Keithley2450:
         finally:
             self._close_temp(smu, temporary)
 
+    @command
     def hold_current_measure_voltage(
         self,
         current: float,
@@ -415,9 +439,10 @@ class Keithley2450:
         finally:
             self._close_temp(smu, temporary)
 
+    @command
     def source_voltage_measure_current(
         self,
-        voltages: Iterable[float],
+        voltages: list[float],
         current_compliance: float,
         delay_s: float = 0.0,
         current_range: float | None = None,
@@ -502,9 +527,10 @@ class Keithley2450:
                 pass
             self._close_temp(smu, temporary)
 
+    @command
     def source_current_measure_voltage(
         self,
-        currents: Iterable[float],
+        currents: list[float],
         voltage_compliance: float,
         delay_s: float = 0.0,
         current_range: float | None = None,
@@ -565,9 +591,10 @@ class Keithley2450:
         finally:
             self._close_temp(smu, temporary)
 
+    @command
     def run_voltage_pulse_train(
         self,
-        voltages: Sequence[float],
+        voltages: list[float],
         current_compliance: float,
         pulse_width_s: float,
         acquire_delay_s: float | None = None,
@@ -731,7 +758,7 @@ class Keithley2450:
         self,
         address: str | None = None,
         device_no: int = 0,
-    ) -> "Keithley2450":
+    ) -> "Driver":
         """Open or reopen the persistent Keithley VISA session."""
         if address is not None:
             self.address = address

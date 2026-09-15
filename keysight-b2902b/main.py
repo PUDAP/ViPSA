@@ -10,7 +10,7 @@ import psutil
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from puda import EdgeNatsClient, EdgeRunner
 
-from driver import KeysightB2902B
+from driver import Driver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,7 +53,7 @@ async def main():
     logger.info("Full config: %s", config.model_dump())
 
     logger.info("Initializing machine driver")
-    driver = KeysightB2902B(
+    driver = Driver(
         device_no=config.keysight_b2902b_device_no,
         address=config.keysight_b2902b_address,
         channel=config.keysight_b2902b_channel,

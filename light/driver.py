@@ -18,13 +18,13 @@ Authors
 import logging
 import time
 import serial
+from puda import command
 
 logger = logging.getLogger(__name__)
 
 
-class Light:
-    """
-    Control the top light for the micropositioning system.
+class Driver:
+    """Adafruit NeoPixel top illumination for the ViPSA micropositioning system.
 
     The light is an Adafruit NeoPixel strip controlled by an Arduino over a
     serial connection.
@@ -88,9 +88,8 @@ class Light:
             logger.info("Connected to lights on %s", self.port)
             return True
         except serial.SerialException as exc:
-            logger.error("Error connecting to lights on %s: %s", self.port, exc)
             self.ser_lights = None
-            return False
+            raise RuntimeError(f"Error connecting to lights on {self.port}: {exc}") from exc
 
     def initialize(self, startup_command: str | None = "off") -> bool:
         """
@@ -105,15 +104,16 @@ class Light:
         """
 
         if not self.is_connected:
-            logger.error("Not connected to lights. Call connect() first.")
-            return False
+            raise RuntimeError("Not connected to lights. Call connect() first.")
 
         if startup_command is None:
             return True
 
-        return self.control_lights(startup_command)
+        self.control_lights(startup_command)
+        return True
 
-    def control_lights(self, command: str) -> bool:
+    @command
+    def control_lights(self, command: str) -> None:
         """
         Send a command to the light controller.
 
@@ -123,19 +123,19 @@ class Light:
             "green" - set the lights to green
             "red" - set the lights to red
             "rainbow" - set the lights to rainbow mode
+
+        Args:
+            command: One of the valid light commands.
         """
 
         if command not in self.VALID_COMMANDS:
-            logger.error(
-                "'%s' is not a valid light command. Valid commands: %s",
-                command,
-                sorted(self.VALID_COMMANDS),
+            raise ValueError(
+                f"'{command}' is not a valid light command. "
+                f"Valid commands: {sorted(self.VALID_COMMANDS)}"
             )
-            return False
 
         if not self.is_connected:
-            logger.error("Not connected to lights. Call connect() first.")
-            return False
+            raise RuntimeError("Not connected to lights. Call connect() first.")
 
         assert self.ser_lights is not None
 
@@ -144,35 +144,38 @@ class Light:
             self.ser_lights.flush()
             time.sleep(self.command_delay)
             logger.info("Command '%s' sent to lights.", command)
-            return True
         except serial.SerialException as exc:
-            logger.error("Error sending command '%s': %s", command, exc)
-            return False
+            raise RuntimeError(f"Error sending command '{command}': {exc}") from exc
 
-    def turn_on(self) -> bool:
+    @command
+    def turn_on(self) -> None:
         """Turn the lights on."""
 
-        return self.control_lights("on")
+        self.control_lights("on")
 
-    def turn_off(self) -> bool:
+    @command
+    def turn_off(self) -> None:
         """Turn the lights off."""
 
-        return self.control_lights("off")
+        self.control_lights("off")
 
-    def set_green(self) -> bool:
+    @command
+    def set_green(self) -> None:
         """Set the lights to green."""
 
-        return self.control_lights("green")
+        self.control_lights("green")
 
-    def set_red(self) -> bool:
+    @command
+    def set_red(self) -> None:
         """Set the lights to red."""
 
-        return self.control_lights("red")
+        self.control_lights("red")
 
-    def set_rainbow(self) -> bool:
+    @command
+    def set_rainbow(self) -> None:
         """Set the lights to rainbow mode."""
 
-        return self.control_lights("rainbow")
+        self.control_lights("rainbow")
 
     def change_intensity(self, percentage: int) -> None:
         """
@@ -184,6 +187,12 @@ class Light:
 
         if not 0 <= percentage <= 100:
             raise ValueError("percentage must be between 0 and 100")
+
+    @command
+    def shutdown(self) -> None:
+        """Turn the lights off and close the serial connection."""
+
+        self.disconnect()
 
     def disconnect(self, turn_off_first: bool = True) -> None:
         """
@@ -204,7 +213,7 @@ class Light:
             if self.ser_lights is not None:
                 self.ser_lights.close()
             logger.info("Lights disconnected")
-        except serial.SerialException as exc:
+        except Exception as exc:
             logger.error("Error disconnecting lights: %s", exc)
         finally:
             self.ser_lights = None

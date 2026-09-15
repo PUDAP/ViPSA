@@ -13,15 +13,15 @@ IMPORTANT:
 
 import logging
 
+from puda import command
 from zaber_motion import Units
 from zaber_motion.ascii import Connection
 
 logger = logging.getLogger(__name__)
 
 
-class Zaber:
-    """
-    Initialization helper for Zaber X-LSQ150A stages.
+class Driver:
+    """XY motion stage pair (Zaber X-LSQ150A) for the ViPSA micropositioning system.
 
     Once initialized, the returned axis objects can be used directly for
     movement commands and position queries.
@@ -79,22 +79,34 @@ class Zaber:
 
         return self.x1, self.y1
 
+    @command
     def configure_units(
         self,
-        distance_units=None,
-        velocity_units=None,
-        acceleration_units=None,
-    ) -> None:
+        distance_units: str | None = None,
+        velocity_units: str | None = None,
+        acceleration_units: str | None = None,
+    ) -> dict[str, str | None]:
         """
         Update the default units used by movement and settings methods.
 
-        Use `None` for native units.
+        Pass a Zaber Units name such as ``LENGTH_MILLIMETRES``, or ``None``
+        for native controller units.
+
+        Args:
+            distance_units: Default distance unit name, or None for native.
+            velocity_units: Default velocity unit name, or None for native.
+            acceleration_units: Default acceleration unit name, or None for native.
+
+        Returns:
+            The currently configured default units.
         """
 
-        self.distance_units = distance_units
-        self.velocity_units = velocity_units
-        self.acceleration_units = acceleration_units
+        self.distance_units = self._coerce_units(distance_units)
+        self.velocity_units = self._coerce_units(velocity_units)
+        self.acceleration_units = self._coerce_units(acceleration_units)
+        return self.get_default_units()
 
+    @command
     def set_holding_current(self, current: int = 50) -> None:
         """
         Set the holding current for both X and Y stages.
@@ -112,74 +124,125 @@ class Zaber:
         x_axis.settings.set("driver.current.hold", current)
         y_axis.settings.set("driver.current.hold", current)
 
-    def move_x_by(self, distance: float, units=None) -> None:
+    @command
+    def move_x_by(self, distance: float, units: str | None = None) -> None:
         """
         Move the X stage by a relative distance.
 
         If `units` is omitted, the class default is used. When the class
         default is `None`, the stage expects native units.
+
+        Args:
+            distance: Relative distance to move.
+            units: Optional Zaber Units name such as ``LENGTH_MILLIMETRES``.
         """
 
         axis = self._require_axis("x1")
-        resolved_units = self.distance_units if units is None else units
+        resolved_units = self.distance_units if units is None else self._coerce_units(units)
         self._move(axis, "move_relative", distance, resolved_units)
 
-    def move_y_by(self, distance: float, units=None) -> None:
-        """Move the Y stage by a relative distance."""
+    @command
+    def move_y_by(self, distance: float, units: str | None = None) -> None:
+        """
+        Move the Y stage by a relative distance.
+
+        Args:
+            distance: Relative distance to move.
+            units: Optional Zaber Units name such as ``LENGTH_MILLIMETRES``.
+        """
 
         axis = self._require_axis("y1")
-        resolved_units = self.distance_units if units is None else units
+        resolved_units = self.distance_units if units is None else self._coerce_units(units)
         self._move(axis, "move_relative", distance, resolved_units)
 
-    def move_x_to(self, position: float, units=None) -> None:
-        """Move the X stage to an absolute position."""
+    @command
+    def move_x_to(self, position: float, units: str | None = None) -> None:
+        """
+        Move the X stage to an absolute position.
+
+        Args:
+            position: Absolute target position.
+            units: Optional Zaber Units name such as ``LENGTH_MILLIMETRES``.
+        """
 
         axis = self._require_axis("x1")
-        resolved_units = self.distance_units if units is None else units
+        resolved_units = self.distance_units if units is None else self._coerce_units(units)
         self._move(axis, "move_absolute", position, resolved_units)
 
-    def move_y_to(self, position: float, units=None) -> None:
-        """Move the Y stage to an absolute position."""
+    @command
+    def move_y_to(self, position: float, units: str | None = None) -> None:
+        """
+        Move the Y stage to an absolute position.
+
+        Args:
+            position: Absolute target position.
+            units: Optional Zaber Units name such as ``LENGTH_MILLIMETRES``.
+        """
 
         axis = self._require_axis("y1")
-        resolved_units = self.distance_units if units is None else units
+        resolved_units = self.distance_units if units is None else self._coerce_units(units)
         self._move(axis, "move_absolute", position, resolved_units)
 
-    def get_current_position(self, units=None) -> dict[str, float]:
+    @command
+    def get_current_position(self, units: str | None = None) -> dict[str, float]:
         """
         Return the current X and Y positions as a telemetry payload.
 
         If `units` is omitted, the class distance default is used. When the
         class default is `None`, the controller returns native units.
+
+        Args:
+            units: Optional Zaber Units name such as ``LENGTH_MILLIMETRES``.
         """
 
         x_axis = self._require_axis("x1")
         y_axis = self._require_axis("y1")
-        resolved_units = self.distance_units if units is None else units
+        resolved_units = self.distance_units if units is None else self._coerce_units(units)
 
         x_pos = self._get_axis_position(x_axis, resolved_units)
         y_pos = self._get_axis_position(y_axis, resolved_units)
         return {"x": x_pos, "y": y_pos}
 
-    def set_maxspeed_x(self, speed: float, units=None) -> None:
-        """Set the X-axis maximum speed."""
+    @command
+    def set_maxspeed_x(self, speed: float, units: str | None = None) -> None:
+        """
+        Set the X-axis maximum speed.
+
+        Args:
+            speed: Maximum speed.
+            units: Optional Zaber velocity unit name.
+        """
 
         axis = self._require_axis("x1")
-        resolved_units = self.velocity_units if units is None else units
+        resolved_units = self.velocity_units if units is None else self._coerce_units(units)
         self._set_axis_setting(axis, "maxspeed", speed, resolved_units)
 
-    def set_maxspeed_y(self, speed: float, units=None) -> None:
-        """Set the Y-axis maximum speed."""
+    @command
+    def set_maxspeed_y(self, speed: float, units: str | None = None) -> None:
+        """
+        Set the Y-axis maximum speed.
+
+        Args:
+            speed: Maximum speed.
+            units: Optional Zaber velocity unit name.
+        """
 
         axis = self._require_axis("y1")
-        resolved_units = self.velocity_units if units is None else units
+        resolved_units = self.velocity_units if units is None else self._coerce_units(units)
         self._set_axis_setting(axis, "maxspeed", speed, resolved_units)
 
-    def set_acceleration_x(self, acceleration: float, units=None) -> None:
-        """Set the X-axis acceleration."""
+    @command
+    def set_acceleration_x(self, acceleration: float, units: str | None = None) -> None:
+        """
+        Set the X-axis acceleration.
+
+        Args:
+            acceleration: Axis acceleration.
+            units: Optional Zaber acceleration unit name.
+        """
 
         axis = self._require_axis("x1")
-        resolved_units = self.acceleration_units if units is None else units
+        resolved_units = self.acceleration_units if units is None else self._coerce_units(units)
         self._set_axis_setting(
             axis,
             "accel",
@@ -187,11 +250,18 @@ class Zaber:
             resolved_units,
         )
 
-    def set_acceleration_y(self, acceleration: float, units=None) -> None:
-        """Set the Y-axis acceleration."""
+    @command
+    def set_acceleration_y(self, acceleration: float, units: str | None = None) -> None:
+        """
+        Set the Y-axis acceleration.
+
+        Args:
+            acceleration: Axis acceleration.
+            units: Optional Zaber acceleration unit name.
+        """
 
         axis = self._require_axis("y1")
-        resolved_units = self.acceleration_units if units is None else units
+        resolved_units = self.acceleration_units if units is None else self._coerce_units(units)
         self._set_axis_setting(
             axis,
             "accel",
@@ -199,7 +269,8 @@ class Zaber:
             resolved_units,
         )
 
-    def get_default_units(self) -> dict:
+    @command
+    def get_default_units(self) -> dict[str, str | None]:
         """Return the currently configured default units for the controller."""
 
         return {
@@ -207,6 +278,28 @@ class Zaber:
             "velocity_units": self._serialize_units(self.velocity_units),
             "acceleration_units": self._serialize_units(self.acceleration_units),
         }
+
+    @command
+    def home(self) -> dict[str, float]:
+        """
+        Home both X and Y stages, then return the origin position.
+
+        Returns:
+            Current X and Y positions after homing.
+        """
+
+        x_axis = self._require_axis("x1")
+        y_axis = self._require_axis("y1")
+        x_axis.home()
+        y_axis.home()
+        logger.info("Homed Zaber X and Y stages")
+        return self.get_current_position()
+
+    @command
+    def shutdown(self) -> None:
+        """Park, disable, and close the Zaber serial connection."""
+
+        self.disconnect()
 
     def disconnect(self) -> None:
         """
@@ -275,6 +368,22 @@ class Zaber:
                 f"{axis_label} unpark",
                 lambda: axis.unpark(),
             )
+
+    @staticmethod
+    def _coerce_units(units):
+        """Convert a JSON unit name into a Zaber Units value.
+
+        Accepts ``None``, a Zaber ``Units`` object, or a string such as
+        ``LENGTH_MILLIMETRES`` or ``Units.LENGTH_MILLIMETRES``.
+        """
+
+        if units is None or not isinstance(units, str):
+            return units
+        name = units.split(".")[-1]
+        try:
+            return getattr(Units, name)
+        except AttributeError as exc:
+            raise ValueError(f"Invalid Zaber units '{units}'") from exc
 
     def _require_axis(self, axis_name: str) -> object:
         """Return the cached axis object, raising a helpful error if needed."""

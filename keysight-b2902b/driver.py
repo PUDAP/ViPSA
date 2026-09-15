@@ -7,6 +7,7 @@ import time
 from typing import Any, Sequence
 
 import pyvisa
+from puda import command
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +62,13 @@ def _record(
 
 #####---MAIN DRIVER CLASS---#####
 
-class KeysightB2902B:
-    """Native SCPI driver for the Keysight B2900 family.
+class Driver:
+    """Keysight B2900/B2902B source-measure unit for DC and pulsed IV measurements.
+
     works fine with both single and dual channel SMUs, i.e. B2901BL and B2902A/B.
     However, the current version forces you to use only the front channels.
 
-    NOTE: Channels and terminals is used interchangably, 
+    NOTE: Channels and terminals is used interchangably,
     since B2900 family has only on channel per side.
     SCPI uses "TERMinal".
 
@@ -105,30 +107,35 @@ class KeysightB2902B:
 
     # Machine-template lifecycle methods
 
+    @command
     def shutdown(self) -> bool:
         """Release the VISA session and disconnect any switch path."""
         self.close_session()
         return True
 
+    @command
     def home(self) -> bool:
         """No homing sequence is defined for this SMU."""
         return True
 
+    @command
     def get_position(self) -> dict[str, float]:
         """Return a fixed position payload for edge telemetry."""
         return {"x": 0.0, "y": 0.0, "z": 0.0}
 
     # Public driver interface
 
-    def initialize(self) -> "KeysightB2902B":
+    @command
+    def initialize(self) -> dict[str, bool]:
         """Apply a conservative default state for lab automation."""
         smu, temporary = self._get_session(timeout=10000)
         try:
             self._apply_default_state(smu)
         finally:
             self._close_temp(smu, temporary)
-        return self
+        return {"ok": True}
 
+    @command
     def identify(self) -> str:
         """Return the instrument ID string.
         Can be used for quick connection check and identification.
@@ -136,15 +143,18 @@ class KeysightB2902B:
         Example response: Keysight Technologies,B2901BL,MY61390645,5.0.2029.1911"""
         return self._query("*IDN?")
 
-    def clear(self) -> "KeysightB2902B":
+    @command
+    def clear(self) -> dict[str, bool]:
         """Clear the Keysight status and error queues."""
         self._write("*CLS")
-        return self
+        return {"ok": True}
 
-    def reset(self) -> "KeysightB2902B":
+    @command
+    def reset(self) -> dict[str, bool]:
         """Reset the Keysight and reapply the ViPSA default setup."""
         return self.initialize()
 
+    @command
     def set_source_function(self, function: str) -> None:
         """Select voltage or current source mode.
         Accepts function tokens such as ``VOLT`` and ``CURR``."""
@@ -152,7 +162,8 @@ class KeysightB2902B:
         func = self._normalize_function(function)
         self._write(f":SOUR{self._channel_suffix}:FUNC:MODE {func}")
 
-    def set_sense_function(self, function: str | Sequence[str]) -> None:
+    @command
+    def set_sense_function(self, function: str | list[str]) -> None:
         """Enable one or more sense functions on the active channel.
         Accepts function tokens such as ``VOLT`` and ``CURR``.
         For example, to enable both voltage and current sensing, 
@@ -161,6 +172,7 @@ class KeysightB2902B:
         tokens = self._normalize_function_list(function)
         self._write(f':SENS{self._channel_suffix}:FUNC {self._format_function_list(tokens)}')
 
+    @command
     def set_source_range(
         self,
         function: str,
@@ -181,6 +193,7 @@ class KeysightB2902B:
         self._write(f":SOUR{self._channel_suffix}:{func}:RANG:AUTO OFF")
         self._write(f":SOUR{self._channel_suffix}:{func}:RANG {float(value):.12g}")
 
+    @command
     def set_sense_range(
         self,
         function: str,
@@ -204,6 +217,7 @@ class KeysightB2902B:
         self._write(f":SENS{self._channel_suffix}:{func}:RANG:AUTO OFF")
         self._write(f":SENS{self._channel_suffix}:{func}:RANG {float(value):.12g}")
 
+    @command
     def set_protection(self, function: str, value: float) -> None:
         """Configure current or voltage protection / compliance."""
         func = self._normalize_function(function)
@@ -215,16 +229,19 @@ class KeysightB2902B:
         self._write(f":SENS{self._channel_suffix}:VOLT:PROT {numeric:.12g}")
         self._write(f":SOUR{self._channel_suffix}:CURR:VLIM {numeric:.12g}")
 
+    @command
     def set_source_level(self, function: str, value: float) -> None:
         """Set the immediate source level for voltage or current."""
         func = self._normalize_function(function)
         self._write(f":SOUR{self._channel_suffix}:{func} {float(value):.12g}")
 
+    @command
     def set_output(self, enabled: bool) -> None:
         """Turn the output on or off for the active channel."""
         self._write(f":OUTP{self._channel_suffix} {'ON' if enabled else 'OFF'}")
 
-    def configure_measurement_format(self, functions: str | Sequence[str]) -> None:
+    @command
+    def configure_measurement_format(self, functions: str | list[str]) -> None:
         """Configure the array and scalar response field order."""
         if isinstance(functions, str):
             payload = functions
@@ -232,6 +249,7 @@ class KeysightB2902B:
             payload = ",".join(str(item).strip().upper() for item in functions)
         self._write(f":FORM:ELEM:SENS {payload}")
 
+    @command
     def query_reading(self) -> str:
         """Query one reading from the active source-measure setup."""
         smu, temporary = self._get_session(timeout=10000)
@@ -246,6 +264,7 @@ class KeysightB2902B:
         finally:
             self._close_temp(smu, temporary)
 
+    @command
     def connect_switch_path(self) -> None:
         """Connect the assigned switch path if a switch wrapper is available.
 
@@ -270,6 +289,7 @@ class KeysightB2902B:
         if hasattr(self.switch, "close_channel"):
             self.switch.close_channel(route)
 
+    @command
     def disconnect_switch_path(self) -> None:
         """Open the assigned switch path if a switch wrapper is available.
         
@@ -320,10 +340,12 @@ class KeysightB2902B:
             errors.append(msg)
         return errors
 
+    @command
     def read_errors(self) -> list[str]:
         """Drain the instrument error queue using the active session."""
         return self.get_error()
 
+    @command
     def stop_output(self, adr: str | None = None) -> None:
         """Turn the channel output off."""
         smu, temporary = self._get_session(adr=adr, timeout=5000)
@@ -332,6 +354,7 @@ class KeysightB2902B:
         finally:
             self._close_temp(smu, temporary)
 
+    @command
     def abort_measurement(self, adr: str | None = None) -> None:
         """Abort active operations and leave the output off."""
         smu, temporary = self._get_session(adr=adr, timeout=5000)
@@ -351,6 +374,7 @@ class KeysightB2902B:
         finally:
             self._close_temp(smu, temporary)
 
+    @command
     def hold_voltage_measure_current(
         self,
         voltage: float,
@@ -419,6 +443,7 @@ class KeysightB2902B:
                 pass
             self._close_temp(smu, temporary)
 
+    @command
     def hold_current_measure_voltage(
         self,
         current: float,
@@ -487,9 +512,10 @@ class KeysightB2902B:
                 pass
             self._close_temp(smu, temporary)
 
+    @command
     def source_voltage_measure_current(
         self,
-        voltages: Sequence[float],
+        voltages: list[float],
         current_compliance: float,
         delay_s: float = 0.0,
         current_range: float | None = None,
@@ -594,9 +620,10 @@ class KeysightB2902B:
                 pass
             self._close_temp(smu, temporary)
 
+    @command
     def source_current_measure_voltage(
         self,
-        currents: Sequence[float],
+        currents: list[float],
         voltage_compliance: float,
         delay_s: float = 0.0,
         current_range: float | None = None,
@@ -685,9 +712,10 @@ class KeysightB2902B:
                 pass
             self._close_temp(smu, temporary)
 
+    @command
     def run_voltage_pulse_train(
         self,
-        voltages: Sequence[float],
+        voltages: list[float],
         current_compliance: float,
         pulse_width_s: float,
         acquire_delay_s: float | None = None,
@@ -811,6 +839,7 @@ class KeysightB2902B:
             )
         return []
 
+    @command
     def recover_pulse_trace(self, adr: str | None = None) -> dict[str, Any]:
         """Recover the currently buffered pulse trace without resetting it."""
         smu, temporary = self._get_session(adr=adr, timeout=120000)
@@ -997,7 +1026,7 @@ class KeysightB2902B:
         self,
         address: str | None = None,
         device_no: int | None = None,
-    ) -> "KeysightB2902B":
+    ) -> "Driver":
         """Open or reopen the persistent Keysight VISA session."""
         target = address
         if target is None:

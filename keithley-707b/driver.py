@@ -10,12 +10,13 @@ import logging
 from typing import Any
 
 import pyvisa
+from puda import command
 
 logger = logging.getLogger(__name__)
 
 
-class Keithley707B:
-    """Minimal Keithley 707B switch wrapper.
+class Driver:
+    """Keithley 707B switch matrix for routing SMU paths.
 
     The class keeps a persistent VISA session and exposes a small set of route
     helpers that are convenient for switching between named SMU paths. It is a
@@ -64,34 +65,41 @@ class Keithley707B:
 
     # Public driver interface
 
-    def close_channel(self, channel: Any) -> None:
+    @command
+    def close_channel(self, channel: str | list[str] | dict) -> None:
         """Close one or more channels.
 
         Args:
             channel:
-                Route name or channel specification to close.
+                Route name, channel token, list of tokens, or a dict with
+                ``row``, ``column``, and optional ``slot``.
         """
         chs = self._format_channels(channel)
         self._send_switch_command(f'channel.close("{chs}")')
 
-    def open_channel(self, channel: Any) -> None:
+    @command
+    def open_channel(self, channel: str | list[str] | dict) -> None:
         """Open one or more channels.
 
         Args:
             channel:
-                Route name or channel specification to open.
+                Route name, channel token, list of tokens, or a dict with
+                ``row``, ``column``, and optional ``slot``.
         """
         chs = self._format_channels(channel)
         self._send_switch_command(f'channel.open("{chs}")')
 
+    @command
     def open_all(self) -> None:
         """Open all channels in all slots."""
         self._send_switch_command('channel.open("allslots")')
 
+    @command
     def get_closed_channels(self) -> str:
         """Return the raw 707B report of closed channels."""
         return self._query_switch_expression('channel.getclose("allslots")')
 
+    @command
     def connect_named_route(
         self,
         route_name: str,
@@ -116,6 +124,7 @@ class Keithley707B:
         self.close_channel(channels)
         return channels
 
+    @command
     def connect_keithley_smu(self, slot: int | None = None) -> list[str]:
         """Connect the named Keithley SMU route.
 
@@ -128,6 +137,7 @@ class Keithley707B:
         """
         return self.connect_named_route("keithley", slot=slot)
 
+    @command
     def connect_keysight_smu(self, slot: int | None = None) -> list[str]:
         """Connect the named Keysight SMU route.
 
@@ -140,12 +150,15 @@ class Keithley707B:
         """
         return self.connect_named_route("keysight", slot=slot)
 
+    @command
     def reset(self) -> None:
-        """Attempt a switch reset without raising on instrument rejection."""
-        try:
-            self._send_switch_command("reset()")
-        except Exception:
-            pass
+        """Reset the switch matrix."""
+        self._send_switch_command("reset()")
+
+    @command
+    def shutdown(self) -> None:
+        """Close the switch VISA session."""
+        self.close_session()
 
     def close_session(self) -> None:
         """Close the switch VISA session."""

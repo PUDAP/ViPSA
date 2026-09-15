@@ -6,22 +6,21 @@ import logging
 import time
 
 import serial
+from puda import command
 
 logger = logging.getLogger(__name__)
 
 
-class Stage:
-    """
-    Control the OpenFlexure stage.
+class Driver:
+    """OpenFlexure GRBL Arduino stage for ViPSA XYZ micropositioning.
 
     G-code is passed to the GRBL firmware flashed on the Arduino, which then
     drives the stepper motors (28BYJ-48). The motor drivers used are Pololu drv8825,
-    which support microstepping up to 1/32. 
-    
+    which support microstepping up to 1/32.
+
     The stage is designed to have a maximum travel of approximately 2mm in all 3 axes.
     To track the current position, the class maintains internal variables that are updated after each movement command.
     This allows the `get_current_position()` method to return the latest position.
-
     """
 
     def __init__(self, port: str, baudrate: int, multiplier: float) -> None:
@@ -46,8 +45,15 @@ class Stage:
             logger.info("Connected to Arduino stage on %s", port)
         except Exception:
             logger.exception("Failed to connect to Arduino stage on %s", port)
-            self.ser = None
+            raise
 
+    def _require_connection(self) -> None:
+        """Raise if the Arduino serial link is not open."""
+
+        if self.ser is None or not self.ser.is_open:
+            raise RuntimeError("Arduino stage is not connected")
+
+    @command
     def set_zero(self) -> None:
         """
         Set the current position of the stage as the new zero reference point.
@@ -56,9 +62,7 @@ class Stage:
         position tracking variables.
         """
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        self._require_connection()
         try:
             gcode = "G10 P0 L20 X0 Y0 Z0\n"
             self.ser.write(gcode.encode())
@@ -68,13 +72,13 @@ class Stage:
             logger.info("Current position set as zero")
         except Exception:
             logger.exception("Failed to set Arduino stage zero")
+            raise
 
+    @command
     def go_to_zero(self) -> None:
         """Move the stage to the zero position."""
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        self._require_connection()
         try:
             gcode = "G90\nG1 X0 F450\nG1 Y0 F450\n"
             self.ser.write(gcode.encode())
@@ -84,6 +88,19 @@ class Stage:
             self.z_pos = 0
         except Exception:
             logger.exception("Failed to move Arduino stage to zero")
+            raise
+
+    @command
+    def home(self) -> None:
+        """Home the stage by moving to the current zero position."""
+
+        self.go_to_zero()
+
+    @command
+    def reset(self) -> None:
+        """Software-reset coordinate tracking by setting the current pose as zero."""
+
+        self.set_zero()
 
     def get_current_position(
         self,
@@ -104,12 +121,23 @@ class Stage:
             logger.exception("Failed to query or parse Arduino stage position")
             return None, None, None
 
-    def move_x_by(self, steps: float) -> None:
-        """Move the stage along the X-axis by a specified number of steps."""
+    @command
+    def get_position(self) -> dict[str, float | None]:
+        """Return the tracked current stage position as a telemetry payload."""
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        x, y, z = self.get_current_position()
+        return {"x": x, "y": y, "z": z}
+
+    @command
+    def move_x_by(self, steps: float) -> None:
+        """
+        Move the stage along the X-axis by a specified number of steps.
+
+        Args:
+            steps: Relative X displacement in steps.
+        """
+
+        self._require_connection()
         try:
             distance = steps * self.scale
             feedrate = 450
@@ -127,13 +155,18 @@ class Stage:
             logger.info("Moved X-axis by %s steps", steps)
         except Exception:
             logger.exception("Failed to move Arduino stage X-axis")
+            raise
 
+    @command
     def move_y_by(self, steps: float) -> None:
-        """Move the stage along the Y-axis by a specified number of steps."""
+        """
+        Move the stage along the Y-axis by a specified number of steps.
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        Args:
+            steps: Relative Y displacement in steps.
+        """
+
+        self._require_connection()
         try:
             distance = steps * self.scale
             feedrate = 450
@@ -149,18 +182,22 @@ class Stage:
             logger.info("Moved Y-axis by %s steps", steps)
         except Exception:
             logger.exception("Failed to move Arduino stage Y-axis")
+            raise
 
+    @command
     def move_xy_by(self, stepsX: float, stepsY: float) -> None:
         """
         Move the stage along both X and Y axes by specified numbers of steps.
 
         This allows simultaneous movement along both axes, which is more
         efficient than moving them sequentially.
+
+        Args:
+            stepsX: Relative X displacement in steps.
+            stepsY: Relative Y displacement in steps.
         """
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        self._require_connection()
         try:
             distanceX = stepsX * self.scale
             distanceY = stepsY * self.scale
@@ -179,18 +216,22 @@ class Stage:
             logger.info("Moved X and Y by %s, %s steps", stepsX, stepsY)
         except Exception:
             logger.exception("Failed to move Arduino stage X/Y axes")
+            raise
 
+    @command
     def move_xy_to(self, x_pos: float, y_pos: float) -> None:
         """
         Move the stage to specific X and Y coordinates in steps.
 
         This calculates the required movement from the current position to the
         target coordinates.
+
+        Args:
+            x_pos: Absolute X coordinate in steps.
+            y_pos: Absolute Y coordinate in steps.
         """
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        self._require_connection()
         try:
             feedrate = 450
             gcode = f"G90\nG1 X{x_pos} Y{y_pos} F{feedrate}\n"
@@ -205,25 +246,29 @@ class Stage:
             logger.info("Moved X and Y to %s, %s steps", x_pos, y_pos)
         except Exception:
             logger.exception("Failed to move Arduino stage to X/Y position")
+            raise
 
-    def move_with_lim_by(self, stepsX: float, stepsY: float) -> int | None:
+    @command
+    def move_with_lim_by(self, stepsX: float, stepsY: float) -> None:
         """
         Move within the stage boundaries.
 
-        Returns:
-            ``None`` on success, ``-1`` when the movement exceeds limits, and
-            ``0`` when not connected or on failure.
+        Args:
+            stepsX: Relative X displacement in steps.
+            stepsY: Relative Y displacement in steps.
+
+        Raises:
+            RuntimeError: If the stage is not connected or the current
+                position cannot be determined.
+            ValueError: If the requested move would exceed the travel limits.
         """
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return 0
+        self._require_connection()
         try:
             current_x, current_y, _current_z = self.get_current_position()
 
             if current_x is None or current_y is None:
-                logger.error("Unable to determine current Arduino stage position")
-                return 0
+                raise RuntimeError("Unable to determine current Arduino stage position")
 
             distanceX = stepsX * self.scale
             distanceY = stepsY * self.scale
@@ -232,15 +277,10 @@ class Stage:
             final_y = current_y + stepsY
 
             if not (-37.5 <= final_x <= 37.5 and -37.5 <= final_y <= 37.5):
-                logger.error(
-                    "Movement exceeds limits. Current position: (%s, %s), "
-                    "requested move: (%s, %s)",
-                    current_x,
-                    current_y,
-                    stepsX,
-                    stepsY,
+                raise ValueError(
+                    "Movement exceeds limits. Current position: "
+                    f"({current_x}, {current_y}), requested move: ({stepsX}, {stepsY})"
                 )
-                return -1
 
             feedrate = 450
             gcode = f"G91\nG1 X{distanceX} Y{distanceY} F{feedrate}\nG90\n"
@@ -256,19 +296,23 @@ class Stage:
             self.x_pos = final_x
             self.y_pos = final_y
             logger.info("Moved X and Y by %s, %s steps", stepsX, stepsY)
-            return None
+        except (RuntimeError, ValueError):
+            raise
         except Exception:
             logger.exception("Failed to move Arduino stage within limits")
-            return 0
+            raise
 
+    @command
     def move_z_by(self, height: float, feedrate: int = 450) -> None:
         """
         Move the stage along the Z-axis by a specified height in steps.
+
+        Args:
+            height: Relative Z displacement in steps.
+            feedrate: GRBL feedrate for the move.
         """
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        self._require_connection()
         try:
             distance = height * self.scale
             gcode = f"G91\nG1 Z{distance} F{feedrate}\nG90\n"
@@ -298,15 +342,15 @@ class Stage:
             logger.info("Moved Z-axis by %s steps", height)
         except Exception:
             logger.exception("Failed to move Arduino stage Z-axis")
+            raise
 
+    @command
     def abort_motion(self) -> None:
         """
         Abort the current motion immediately without resuming previous commands.
         """
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        self._require_connection()
         try:
             pos = self.get_current_position()
 
@@ -332,19 +376,25 @@ class Stage:
             logger.info("Hold cleared without resuming previous motion")
         except Exception:
             logger.exception("Failed to abort Arduino stage motion")
+            raise
+
+    @command
+    def shutdown(self) -> None:
+        """Move to zero and close the Arduino serial connection."""
+
+        self.disconnect()
 
     def disconnect(self) -> None:
         """Disconnect from the Arduino stage after moving to zero."""
 
-        if self.ser is None or not self.ser.is_open:
-            logger.error("Arduino stage is not connected")
-            return
+        self._require_connection()
         try:
             self.go_to_zero()
             self.ser.close()
             logger.info("Arduino stage disconnected")
         except Exception:
             logger.exception("Failed to disconnect Arduino stage")
+            raise
 
     def _flush(self, clear_input: bool = True, clear_output: bool = False) -> bool:
         """
@@ -460,6 +510,6 @@ class Stage:
             logger.exception("Failed to send raw G-code to Arduino stage")
 
 
-stage = Stage
+stage = Driver
 
-__all__ = ["Stage", "stage"]
+__all__ = ["Driver", "stage"]

@@ -10,7 +10,7 @@ import psutil
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from puda import EdgeNatsClient, EdgeRunner
 
-from light import Light
+from driver import Driver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +52,7 @@ async def main():
     logger.info("Full config: %s", config.model_dump())
 
     logger.info("Initializing machine driver")
-    driver = Light(port=config.light_port, baudrate=config.light_baudrate)
+    driver = Driver(port=config.light_port, baudrate=config.light_baudrate)
     logger.info("Machine driver initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)

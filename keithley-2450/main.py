@@ -10,7 +10,7 @@ import psutil
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from puda import EdgeNatsClient, EdgeRunner
 
-from driver import Keithley2450
+from driver import Driver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +52,7 @@ async def main():
     logger.info("Full config: %s", config.model_dump())
 
     logger.info("Initializing machine driver")
-    driver = Keithley2450(
+    driver = Driver(
         device_no=config.keithley_2450_device_no,
         address=config.keithley_2450_address,
     )

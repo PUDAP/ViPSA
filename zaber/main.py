@@ -10,7 +10,7 @@ import psutil
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from puda import EdgeNatsClient, EdgeRunner
 
-from driver import Zaber
+from driver import Driver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,7 +51,7 @@ async def main():
     logger.info("Full config: %s", config.model_dump())
 
     logger.info("Initializing machine driver")
-    driver = Zaber(port=config.zaber_port)
+    driver = Driver(port=config.zaber_port)
     logger.info("Machine driver initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)

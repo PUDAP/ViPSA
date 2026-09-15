@@ -10,7 +10,7 @@ import psutil
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from puda import EdgeNatsClient, EdgeRunner
 
-from driver import Keithley707B
+from driver import Driver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,7 +53,7 @@ async def main():
     logger.info("Full config: %s", config.model_dump())
 
     logger.info("Initializing machine driver")
-    driver = Keithley707B(
+    driver = Driver(
         device_no=config.keithley_707b_device_no,
         address=config.keithley_707b_address,
         slot=config.keithley_707b_slot,
