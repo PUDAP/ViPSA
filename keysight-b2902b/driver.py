@@ -811,6 +811,29 @@ class KeysightB2902B:
             )
         return []
 
+    def recover_pulse_trace(self, adr: str | None = None) -> dict[str, Any]:
+        """Recover the currently buffered pulse trace without resetting it."""
+        smu, temporary = self._get_session(adr=adr, timeout=120000)
+        suffix = self._channel_suffix
+        try:
+            try:
+                active_points = int(float(smu.query(f":TRAC{suffix}:ACT?").strip()))
+            except Exception:
+                active_points = None
+            return {
+                "active_points": active_points,
+                "source_values": self._fetch_ascii_array("SOUR", smu=smu),
+                "voltage_readings": self._fetch_ascii_array("VOLT", smu=smu),
+                "current_values": self._fetch_ascii_array("CURR", smu=smu),
+                "time_values": self._fetch_ascii_array("TIME", smu=smu),
+            }
+        finally:
+            try:
+                smu.write(f":OUTP{suffix} OFF")
+            except Exception:
+                pass
+            self._close_temp(smu, temporary)
+
     # Internal utility methods
 
     @property

@@ -272,14 +272,28 @@ class Stage:
         try:
             distance = height * self.scale
             gcode = f"G91\nG1 Z{distance} F{feedrate}\nG90\n"
+            logger.info(
+                "VERBOSE_Z_MOVE_BEGIN height=%s distance=%s feedrate=%s port=%s open=%s in_waiting_before=%s gcode=%r",
+                height,
+                distance,
+                feedrate,
+                getattr(self.ser, "port", None),
+                self.ser.is_open,
+                self.ser.in_waiting,
+                gcode,
+            )
             self.ser.write(gcode.encode())
+            self.ser.flush()
+            logger.info("VERBOSE_Z_MOVE_AFTER_WRITE out_waiting=%s in_waiting=%s", self.ser.out_waiting, self.ser.in_waiting)
 
             time.sleep(abs(distance) * 0.15)
-            self.ser.flush()
             status = self._is_busy()
+            logger.info("VERBOSE_Z_MOVE_STATUS status=%r in_waiting_after_status=%s", status, self.ser.in_waiting)
             while status is not None and "Run" in status:
                 status = self._is_busy()
-                logger.debug("Arduino stage still running: %s", status)
+                logger.info("VERBOSE_Z_MOVE_STATUS_LOOP status=%r in_waiting=%s", status, self.ser.in_waiting)
+            remaining = [line.decode("utf-8", errors="replace").strip() for line in self.ser.readlines()]
+            logger.info("VERBOSE_Z_MOVE_GRBL_REMAINING %r", remaining)
             self.z_pos = self.z_pos + height
             logger.info("Moved Z-axis by %s steps", height)
         except Exception:

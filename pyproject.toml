@@ -4,6 +4,15 @@ version = "0.1.0"
 description = "ViPSA PUDA edge services for instrument control."
 readme = "README.md"
 requires-python = ">=3.14"
+dependencies = [
+    "matplotlib>=3.11.0",
+    "opencv-python>=5.0.0.93",
+    "pyusb>=1.3.1",
+    "pyvisa-py>=0.8.1",
+    "scipy>=1.18.0",
+    "seaborn>=0.13.2",
+    "zaber-motion>=9.3.1",
+]
 
 [tool.uv.workspace]
 members = [

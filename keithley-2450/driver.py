@@ -434,7 +434,10 @@ class Keithley2450:
             return []
 
         delay_value = max(0.0, float(delay_s))
-        timeout_ms = max(120000, int((delay_value * len(voltage_values) + 30.0) * 1000))
+        # Native list timing can exceed commanded dwell substantially on very-high-HRS
+        # paths because current autoranging adds per-point overhead. Keep a 300 s
+        # margin so long slow sweeps complete before the VISA query timeout.
+        timeout_ms = max(600000, int((delay_value * len(voltage_values) + 300.0) * 1000))
         buffer_name = "defbuffer1"
         range_mode = str(sweep_range_mode).strip().upper()
         if range_mode not in {"AUTO", "BEST", "FIXED", "MANUAL"}:
@@ -638,8 +641,13 @@ class Keithley2450:
         if len(voltages) > 2500:
             raise ValueError("The Keithley 2450 source-list limit is 2500 points.")
 
-        for start in range(0, len(voltages), 100):
-            chunk = voltages[start:start + 100]
+        # Keep each SCPI command comfortably below the 2450 parser/input-buffer
+        # limit. Negative values add one character each; 100-point chunks can
+        # silently reject the initial list command while a shorter :APP command
+        # succeeds, causing only the tail of a sweep to execute.
+        chunk_size = 50
+        for start in range(0, len(voltages), chunk_size):
+            chunk = voltages[start:start + chunk_size]
             payload = ",".join(f"{float(value):.12g}" for value in chunk)
             command = ":SOUR:LIST:VOLT" if start == 0 else ":SOUR:LIST:VOLT:APP"
             smu.write(f"{command} {payload}")
