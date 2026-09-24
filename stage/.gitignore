@@ -36,6 +36,10 @@ uv.lock
 !.vscode/launch.json
 !.vscode/extensions.json
 
+# Persistent runtime stage state (host-local; never reset by git updates)
+/state/*.json
+!/state/.gitkeep
+
 # misc
 /.sass-cache
 /connect.lock

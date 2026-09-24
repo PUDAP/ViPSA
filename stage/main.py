@@ -27,6 +27,8 @@ class Config(BaseSettings):
     stage_port: str
     stage_baudrate: int = 115200
     stage_multiplier: float = 1.0
+    stage_state_path: Path = Path("state/openflexure_position.json")
+    stage_position_limit: float = 300.0
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parent / ".env",
@@ -57,6 +59,8 @@ async def main():
         port=config.stage_port,
         baudrate=config.stage_baudrate,
         multiplier=config.stage_multiplier,
+        state_path=config.stage_state_path,
+        position_limit=config.stage_position_limit,
     )
     logger.info("Machine driver initialized successfully")
 
@@ -87,7 +91,7 @@ async def main():
         nats_client=edge_nats_client,
         machine_driver=driver,
         telemetry_handler=telemetry_handler,
-        state_handler=lambda: {},
+        state_handler=driver.get_state,
     )
     await runner.connect()
     logger.info("NATS client initialized successfully")
@@ -95,7 +99,10 @@ async def main():
         "==================== %s Edge Service Ready. Publishing telemetry... ====================",
         config.machine_id,
     )
-    await runner.run()
+    try:
+        await runner.run()
+    finally:
+        driver.disconnect()
 
 
 if __name__ == "__main__":
