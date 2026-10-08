@@ -75,6 +75,149 @@ class Driver:
 
         self.initialize()
 
+    def _get_guarded_2450(self):
+        """Lazily wrap the existing session; no resource opening or initialization."""
+        from guarded_2450 import Guarded2450
+        if not hasattr(self, '_guarded_2450'):
+            import os
+            import json
+            from pathlib import Path
+            from guarded_2450 import CapabilityError
+            # Exact case-sensitive opt-in: VIPSA_GUARD_QUALIFICATION_FILE.
+            # Resolve relative paths ONCE against the loading process cwd.
+            configured = os.environ.get('VIPSA_GUARD_QUALIFICATION_FILE')
+            path = Path(configured).resolve() if configured else None
+            qualification = None
+            if path is not None:
+                try:
+                    qualification = json.loads(path.read_text())
+                    if not isinstance(qualification, dict):
+                        raise ValueError('qualification must be an object')
+                except (OSError, ValueError) as exc:
+                    raise CapabilityError('External qualification unavailable or invalid') from exc
+            self._guard_qualification_path = path
+            self._guarded_2450 = Guarded2450(self.smu, qualification)
+        return self._guarded_2450
+
+    @command
+    def get_acquisition_capabilities(self) -> dict[str, Any]:
+        """Return conservative acquisition capabilities without instrument I/O."""
+        guard = self._get_guarded_2450()
+        caps = guard.get_acquisition_capabilities()
+        q = guard.qualification or {}
+        path = self._guard_qualification_path
+        caps['qualification_evidence'] = None  # never serialize external contents
+        caps['qualification_configured'] = guard.qualification is not None
+        caps['qualification_file_reference'] = str(path) if path else None
+        caps['qualification_scope_reference'] = q.get('scope_reference') if isinstance(q.get('scope_reference'), str) else None
+        caps['methods'] = ['prepare_guarded_acquisition', 'execute_guarded_acquisition',
+                           'get_exposure_guard_state', 'get_acquisition_capabilities',
+                           'get_terminals', 'abort_guarded_acquisition',
+                           'get_protection_deployment_state']
+        return caps
+
+    @command
+    def get_exposure_guard_state(self) -> dict[str, Any]:
+        """Read guard state and query-only prepared configuration verification."""
+        return self._get_guarded_2450().get_exposure_guard_state()
+
+    @command
+    def prepare_guarded_acquisition(
+        self, voltages: list[float], current_compliance: float | list[float], *,
+        delay_s: float = 0.0, nplc: float = 0.1,
+        current_range: float | None = None, voltage_range: float | None = None,
+        reset: bool = True, deadline_s: float, operation_limit_j: float,
+        device_limit_j: float = 5.0, category: str = 'forming',
+        branch_ids: list[str | int | None] | None = None,
+        device_id: str | None = None, remaining_device_j: float | None = None,
+        warning_waiver_scopes: list[str] | tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Prepare an output-OFF one-shot plan using external qualification only."""
+        from guarded_2450 import CapabilityError
+        guard = self._get_guarded_2450()
+        q = dict(guard.qualification or {})
+        envelopes = q.pop('envelopes', None)
+        if envelopes is not None:
+            phase = 'forming' if category == 'recovery' else category
+            if not isinstance(envelopes, dict) or not isinstance(envelopes.get(phase), dict):
+                raise CapabilityError('Missing exact category qualification envelope: ' + phase)
+            q.update(envelopes[phase])
+        if q:
+            required = ['voltage_bound_v', 'current_bound_a', 'measurement_max_s',
+                        'source_update_max_s', 'shutdown_max_s', 'block_max_s']
+            if q.get('kind') == 'physical':
+                required += ['nplc_max', 'qualified_duration_s', 'timing_evidence_reference']
+            missing = [key for key in required if q.get(key) is None]
+            if missing:
+                raise CapabilityError('Missing qualification bounds: ' + ', '.join(missing))
+        return guard.prepare_guarded_acquisition(
+            voltages, current_compliance, delay_s=delay_s, nplc=nplc,
+            current_range=current_range, voltage_range=voltage_range,
+            reset=reset, deadline_s=deadline_s, operation_limit_j=operation_limit_j,
+            device_limit_j=device_limit_j, category=category, branch_ids=branch_ids,
+            device_id=device_id, remaining_device_j=remaining_device_j,
+            warning_waiver_scopes=warning_waiver_scopes)
+
+    @command
+    def execute_guarded_acquisition(self, plan_id: str, *, host_timeout_s: float = 30.0) -> dict[str, Any]:
+        """Execute the exact prepared plan once; never retry INIT or infer proof."""
+        result = self._get_guarded_2450().execute_guarded_acquisition(plan_id, host_timeout_s=host_timeout_s)
+        result['capabilities'] = self.get_acquisition_capabilities()
+        return result
+
+    @command
+    def get_terminals(self) -> str:
+        """Query native SCPI terminals without changing output, language or route."""
+        return self._get_guarded_2450().get_terminals()
+
+    @command
+    def abort_guarded_acquisition(self) -> dict[str, Any]:
+        """Abort guarded acquisition and attempt verified output OFF; no replay."""
+        return self._get_guarded_2450().abort_guarded_acquisition()
+
+    @command
+    def get_protection_deployment_state(self) -> dict[str, Any]:
+        """Read code/config fingerprints; never infer physical qualification.
+
+        Only VIPSA_GUARD_QUALIFICATION_FILE is read, never default-profile
+        secrets. Relative paths are resolved at first guard access. File hashes
+        describe current disk contents, not a claim of deployed/qualified proof.
+        """
+        import hashlib
+        import re
+        import subprocess
+        from pathlib import Path
+        caps = self.get_acquisition_capabilities()
+        directory = Path(__file__).resolve().parent
+        revision = None
+        try:
+            completed = subprocess.run(
+                ['git', '-C', str(directory.parent), 'rev-parse', 'HEAD'],
+                check=True, capture_output=True, text=True, timeout=2)
+            candidate = completed.stdout.strip()
+            if re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', candidate):
+                revision = candidate
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        def digest(path):
+            try:
+                return hashlib.sha256(path.read_bytes()).hexdigest() if path else None
+            except OSError:
+                return None
+
+        return {
+            'git_commit': revision,
+            'scope_qualified': False,
+            'physical_qualified': False,
+            'code_sha256': {name: digest(directory / name)
+                            for name in ('driver.py', 'guarded_2450.py')},
+            'configuration_sha256': {'guard_qualification': digest(self._guard_qualification_path)},
+            'qualification_configured': caps['qualification_configured'],
+            'qualification_file_reference': caps['qualification_file_reference'],
+            'qualification_scope_reference': caps['qualification_scope_reference'],
+        }
+
     # Machine-template lifecycle methods
 
     @command
