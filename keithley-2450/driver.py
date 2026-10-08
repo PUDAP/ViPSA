@@ -93,6 +93,7 @@ class Driver:
         """Return a fixed position payload for edge telemetry."""
         return {"x": 0.0, "y": 0.0, "z": 0.0}
 
+
     # Public driver interface
 
     @command
@@ -222,6 +223,11 @@ class Driver:
                 break
             errors.append(msg)
         return errors
+        
+    @command
+    def get_output(self) -> str:
+        "Returns whether the output is on"
+        return self._query(":OUTP?")
 
     @command
     def read_errors(self) -> list[str]:
