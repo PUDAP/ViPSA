@@ -697,7 +697,10 @@ class Driver:
                 smu.write(f":SENS:CURR:NPLC {float(nplc):.12g}")
 
             smu.write(f':TRAC:CLE "{buffer_name}"')
-            smu.write(f':TRAC:POIN {len(voltage_values)}, "{buffer_name}"')
+            # The 2450 enforces a minimum trace-buffer capacity of 10 even
+            # when a valid native source list contains fewer points. Buffer
+            # capacity is independent of the requested/returned point count.
+            smu.write(f':TRAC:POIN {max(10, len(voltage_values))}, "{buffer_name}"')
             smu.write(":FORM:DATA ASC")
             list_proof = self._verify_native_voltage_list_output_off(smu, voltage_values, expected_ilimit=current_compliance)
             smu.write(
