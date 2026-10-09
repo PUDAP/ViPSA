@@ -859,19 +859,27 @@ class Driver:
     @command
     def verify_native_voltage_list_output_off(self, voltages: list[float],
                                              voltage_range: float | None = None,
-                                             current_compliance: float | None = None) -> dict[str, Any]:
-        """OFF-only proof with the same VOLT/AUTO/compliance setup as a native sweep."""
+                                             current_compliance: float | None = None,
+                                             current_range: float | None = None) -> dict[str, Any]:
+        """OFF-only proof with the same VOLT/AUTO/compliance/measure-range setup as a native sweep."""
         smu = self.smu
+        if smu is None:
+            raise RuntimeError('SMU session unavailable')
         if smu.query(':OUTP?').strip().upper() not in {'0', 'OFF'}:
             smu.write(':OUTP OFF')
             raise NativeIntegrityError('Verifier requires output OFF', {'verified': False})
         if voltage_range is not None and (not math.isfinite(float(voltage_range)) or float(voltage_range) <= 0):
             raise ValueError('voltage_range must be finite and positive')
+        if current_range is not None and (not math.isfinite(float(current_range)) or float(current_range) <= 0):
+            raise ValueError('current_range must be finite and positive')
         smu.write(':SOUR:FUNC VOLT')
         smu.write(':SOUR:VOLT:READ:BACK ON')
         smu.write(':SOUR:VOLT:RANG:AUTO ' + ('ON' if voltage_range is None else 'OFF'))
         if voltage_range is not None:
             smu.write(f':SOUR:VOLT:RANG {float(voltage_range):.12g}')
+        if current_range is not None:
+            smu.write(':SENS:CURR:RANG:AUTO OFF')
+            smu.write(f':SENS:CURR:RANG {float(current_range):.12g}')
         if current_compliance is not None:
             if not math.isfinite(float(current_compliance)) or float(current_compliance) <= 0:
                 raise ValueError('current_compliance must be finite and positive')
