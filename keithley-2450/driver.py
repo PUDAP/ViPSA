@@ -858,8 +858,9 @@ class Driver:
 
     @command
     def verify_native_voltage_list_output_off(self, voltages: list[float],
-                                             voltage_range: float | None = None) -> dict[str, Any]:
-        """OFF-only proof with the same VOLT/AUTO setup as the native sweep."""
+                                             voltage_range: float | None = None,
+                                             current_compliance: float | None = None) -> dict[str, Any]:
+        """OFF-only proof with the same VOLT/AUTO/compliance setup as a native sweep."""
         smu = self.smu
         if smu.query(':OUTP?').strip().upper() not in {'0', 'OFF'}:
             smu.write(':OUTP OFF')
@@ -871,7 +872,11 @@ class Driver:
         smu.write(':SOUR:VOLT:RANG:AUTO ' + ('ON' if voltage_range is None else 'OFF'))
         if voltage_range is not None:
             smu.write(f':SOUR:VOLT:RANG {float(voltage_range):.12g}')
-        return self._verify_native_voltage_list_output_off(smu, voltages)
+        if current_compliance is not None:
+            if not math.isfinite(float(current_compliance)) or float(current_compliance) <= 0:
+                raise ValueError('current_compliance must be finite and positive')
+            smu.write(f':SOUR:VOLT:ILIM {float(current_compliance):.17g}')
+        return self._verify_native_voltage_list_output_off(smu, voltages, expected_ilimit=current_compliance)
 
     def _native_source_snapshot(self, smu):
         return {key: smu.query(cmd).strip() for key, cmd in (
