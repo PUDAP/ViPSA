@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 import time
+import math
 
 import pyvisa
 from puda import command
@@ -16,8 +17,8 @@ def _record(
     v_meas: float | None = None,
     i_meas: float | None = None,
     cycle_number: float | None = None,
-) -> dict[str, float | None]:
-    """Build one normalized measurement record."""
+) -> dict[str, Any]:
+    """Build one normalized measurement record, allowing provenance metadata."""
     v_error = None
     i_error = None
 
@@ -39,6 +40,14 @@ def _record(
         "I_error (A)": i_error,
         "Cycle Number": cycle_number,
     }
+
+
+class NativeIntegrityError(RuntimeError):
+    """Fail-closed native integrity error retaining unmodified diagnostic replies."""
+
+    def __init__(self, message: str, evidence: dict[str, Any]):
+        self.evidence = evidence
+        super().__init__(message + ': ' + repr(evidence))
 
 
 class Driver:
@@ -321,8 +330,8 @@ class Driver:
         func = self._normalize_function(function)
         numeric = float(value)
         if func == "VOLT":
-            self._write(f":SENS:CURR:PROT {numeric:.12g}")
-            self._write(f":SOUR:VOLT:ILIM {numeric:.12g}")
+            # Native ILIM replaces Model 2400 SENS:CURR:PROT (manual section 18).
+            self._write(f":SOUR:VOLT:ILIM {numeric:.17g}")
             return
         self._write(f":SENS:VOLT:PROT {numeric:.12g}")
         self._write(f":SOUR:CURR:VLIM {numeric:.12g}")
@@ -471,15 +480,17 @@ class Driver:
     ) -> list[dict[str, float | None]]:
         """Apply a constant voltage bias and measure current one or more times."""
         smu, temporary = self._get_session(adr=adr, timeout=30000)
+        evidence: dict[str, Any] = {'read_count': max(1, int(read_count)), 'raw_reads': []}
+        self._last_native_hold_evidence = evidence
         try:
+            smu.write(":OUTP OFF")
             if reset:
                 smu.write("*RST")
                 smu.write("*CLS")
             smu.write(":ROUT:TERM REAR")
             smu.write(":SOUR:FUNC VOLT")
             smu.write(':SENS:FUNC "CURR"')
-            smu.write(f":SENS:CURR:PROT {float(current_compliance):.12g}")
-            smu.write(f":SOUR:VOLT:ILIM {float(current_compliance):.12g}")
+            smu.write(f":SOUR:VOLT:ILIM {float(current_compliance):.17g}")
 
             if voltage_range is not None:
                 smu.write(":SOUR:VOLT:RANG:AUTO OFF")
@@ -496,31 +507,65 @@ class Driver:
             if nplc is not None:
                 smu.write(f":SENS:CURR:NPLC {float(nplc):.12g}")
 
-            smu.write(":FORM:ELEM VOLT,CURR")
+            smu.write(":FORM:DATA ASC")
+            smu.write(":SOUR:VOLT:READ:BACK ON")
+            smu.write(":SENS:COUN 1")
             smu.write(f":SOUR:VOLT:LEV {float(voltage):.12g}")
+            evidence['configuration'] = {cmd: smu.query(cmd).strip() for cmd in (
+                ':SOUR:FUNC?', ':SENS:FUNC?', ':SOUR:VOLT:READ:BACK?',
+                ':SOUR:VOLT:ILIM?', ':SOUR:VOLT:LEV?', ':SENS:COUN?')}
+            config = evidence['configuration']
+            evidence['pre_enable_error'] = smu.query(':SYST:ERR?').strip()
+            if (config[':SOUR:FUNC?'].upper() != 'VOLT'
+                    or config[':SENS:FUNC?'].strip('"').upper() not in {'CURR', 'CURR:DC'}
+                    or config[':SOUR:VOLT:READ:BACK?'].upper() not in {'1', 'ON'}
+                    or float(config[':SENS:COUN?']) != 1
+                    or format(float(config[':SOUR:VOLT:ILIM?']), '.6g') != format(float(current_compliance), '.6g')
+                    or format(float(config[':SOUR:VOLT:LEV?']), '.6g') != format(float(voltage), '.6g')
+                    or int(evidence['pre_enable_error'].split(',', 1)[0]) != 0):
+                raise ValueError('Native voltage hold configuration/error mismatch')
             smu.write(":OUTP ON")
-
             if settle_s > 0:
                 time.sleep(settle_s)
-
             t0 = time.perf_counter()
-            records: list[dict[str, float | None]] = []
+            records = []
+            previous_time = None
             for index in range(max(1, int(read_count))):
-                v_meas, i_meas = self._read_measurement_pair(smu)
-                records.append(
-                    _record(
-                        timestamp=time.perf_counter() - t0,
-                        v_cmd=voltage,
-                        v_meas=v_meas,
-                        i_meas=i_meas,
-                        cycle_number=float(index),
-                    )
-                )
-
-            smu.write(":OUTP OFF")
+                raw = smu.query(':READ? "defbuffer1", SOUR, READ, REL').strip()
+                evidence['raw_reads'].append(raw)
+                parts = raw.split(',')
+                if len(parts) != 3:
+                    raise ValueError('Native voltage hold requires measured V/I/REL triple')
+                v_meas, i_meas, timestamp = [float(v.strip()) for v in parts]
+                if not all(math.isfinite(v) for v in (v_meas, i_meas, timestamp)):
+                    raise ValueError('Native voltage hold nonfinite V/I/REL')
+                if previous_time is not None and timestamp < previous_time:
+                    raise ValueError('Native voltage hold time is not monotonic')
+                previous_time = timestamp
+                record = _record(timestamp=time.perf_counter() - t0, v_cmd=voltage, v_meas=v_meas,
+                    i_meas=i_meas, cycle_number=float(index))
+                record['native_buffer_relative_s'] = timestamp
+                record['native_integrity'] = evidence
+                records.append(record)
+            evidence['host_elapsed_s'] = time.perf_counter() - t0
+            evidence['time_provenance'] = 'host_perf_counter_after_settle; native_buffer_REL_retained_separately'
+            evidence['raw_error'] = smu.query(':SYST:ERR?').strip()
+            if int(evidence['raw_error'].split(',', 1)[0]) != 0:
+                raise ValueError('Native voltage hold instrument error')
             return records
+        except Exception as exc:
+            evidence['failure'] = str(exc)
+            if 'raw_error' not in evidence:
+                try:
+                    evidence['raw_error'] = smu.query(':SYST:ERR?').strip()
+                except Exception as diagnostic_exc:
+                    evidence['diagnostic_failure'] = str(diagnostic_exc)
+            raise NativeIntegrityError('Native voltage hold failure', evidence) from exc
         finally:
-            self._close_temp(smu, temporary)
+            try:
+                smu.write(':OUTP OFF')
+            finally:
+                self._close_temp(smu, temporary)
 
     @command
     def hold_current_measure_voltage(
@@ -628,8 +673,7 @@ class Driver:
             smu.write(":SOUR:FUNC VOLT")
             smu.write(":SOUR:VOLT:READ:BACK ON")
             smu.write(':SENS:FUNC "CURR"')
-            smu.write(f":SENS:CURR:PROT {float(current_compliance):.12g}")
-            smu.write(f":SOUR:VOLT:ILIM {float(current_compliance):.12g}")
+            smu.write(f":SOUR:VOLT:ILIM {float(current_compliance):.17g}")
 
             if voltage_range is not None:
                 smu.write(":SOUR:VOLT:RANG:AUTO OFF")
@@ -655,7 +699,7 @@ class Driver:
             smu.write(f':TRAC:CLE "{buffer_name}"')
             smu.write(f':TRAC:POIN {len(voltage_values)}, "{buffer_name}"')
             smu.write(":FORM:DATA ASC")
-            self._write_voltage_source_list(smu, voltage_values)
+            list_proof = self._verify_native_voltage_list_output_off(smu, voltage_values, expected_ilimit=current_compliance)
             smu.write(
                 f':SOUR:SWE:VOLT:LIST 1, {delay_value:.12g}, 1, OFF, "{buffer_name}"'
             )
@@ -812,21 +856,236 @@ class Driver:
             return None, float(parts[0])
         return None, None
 
+    @command
+    def verify_native_voltage_list_output_off(self, voltages: list[float],
+                                             voltage_range: float | None = None) -> dict[str, Any]:
+        """OFF-only proof with the same VOLT/AUTO setup as the native sweep."""
+        smu = self.smu
+        if smu.query(':OUTP?').strip().upper() not in {'0', 'OFF'}:
+            smu.write(':OUTP OFF')
+            raise NativeIntegrityError('Verifier requires output OFF', {'verified': False})
+        if voltage_range is not None and (not math.isfinite(float(voltage_range)) or float(voltage_range) <= 0):
+            raise ValueError('voltage_range must be finite and positive')
+        smu.write(':SOUR:FUNC VOLT')
+        smu.write(':SOUR:VOLT:READ:BACK ON')
+        smu.write(':SOUR:VOLT:RANG:AUTO ' + ('ON' if voltage_range is None else 'OFF'))
+        if voltage_range is not None:
+            smu.write(f':SOUR:VOLT:RANG {float(voltage_range):.12g}')
+        return self._verify_native_voltage_list_output_off(smu, voltages)
+
+    def _native_source_snapshot(self, smu):
+        return {key: smu.query(cmd).strip() for key, cmd in (
+            ('function', ':SOUR:FUNC?'), ('range', ':SOUR:VOLT:RANG?'),
+            ('auto', ':SOUR:VOLT:RANG:AUTO?'), ('level', ':SOUR:VOLT:LEV?'),
+            ('ilimit', ':SOUR:VOLT:ILIM?'), ('readback', ':SOUR:VOLT:READ:BACK?'))}
+
+    def _parse_native_source_config(self, raw):
+        """Parse assignments, never execute returned TSP; AUTO range may be 'not used'."""
+        import re
+        from decimal import Decimal
+        fields = {}
+        for part in raw.split(';'):
+            m = re.fullmatch(r'\s*smu\.source\.([a-z.]+)\s*=\s*(.*?)\s*', part)
+            if m:
+                if m[1] in fields:
+                    raise ValueError('Duplicate stored source setting')
+                fields[m[1]] = m[2]
+        if fields.get('func') != 'smu.FUNC_DC_VOLTAGE':
+            raise ValueError('Stored source function is not voltage')
+        for key in ('level', 'ilimit.level'):
+            value = Decimal(fields[key])
+            if not value.is_finite():
+                raise ValueError('Nonfinite stored source configuration')
+        if fields.get('autorange') not in {'smu.ON', 'smu.OFF'}:
+            raise ValueError('Missing/unknown stored source autorange')
+        return fields
+
+    def _prove_native_source_indices(self, smu, values, actual, proof, expected_ilimit=None):
+        from decimal import Decimal, ROUND_FLOOR
+        import json
+        # Manufacturer 2450 datasheet p8, SOURCE resolution, not accuracy tolerance.
+        grids = {Decimal('0.02'): Decimal('0.0000005'), Decimal('0.2'): Decimal('0.000005'),
+                 Decimal('2'): Decimal('0.00005'), Decimal('20'): Decimal('0.0005'),
+                 Decimal('200'): Decimal('0.005')}
+        six = lambda value: Decimal(format(float(value), '.6g'))
+        def config_encodings(value):
+            # Captured TSP settings can expose binary32 storage before seven-digit ASCII.
+            # This is a discrete encoding check, never a widened voltage tolerance.
+            import struct
+            binary32 = struct.unpack('!f', struct.pack('!f', float(value)))[0]
+            return {Decimal(format(float(value), '.7g')), Decimal(format(binary32, '.7g'))}
+
+        before = proof['source_config_before']
+        proof['stored_configs'] = []
+        try:
+            for index, (requested, returned) in enumerate(zip(values, actual), 1):
+                if smu.query(':OUTP?').strip().upper() not in {'0', 'OFF'}:
+                    raise ValueError('Output not OFF before configuration recall')
+                raw = smu.query(f':SOUR:CONF:LIST:QUER? "VoltCustomSweepList",{index},SEM').strip()
+                row = {'index': index, 'raw_config': raw}
+                proof['stored_configs'].append(row)
+                fields = self._parse_native_source_config(raw)
+                smu.write(f':SOUR:CONF:LIST:REC "VoltCustomSweepList",{index}')
+                row['range_V'] = smu.query(':SOUR:VOLT:RANG?').strip()
+                row['recalled_level_V'] = smu.query(':SOUR:VOLT:LEV?').strip()
+                r, level = Decimal(row['range_V']), Decimal(fields['level'])
+                recalled = Decimal(row['recalled_level_V'])
+                if not r.is_finite() or r not in grids or not recalled.is_finite():
+                    raise ValueError('Unknown/nonfinite recalled range or level')
+                if fields['autorange'] != ('smu.ON' if before['auto'] in {'1', 'ON'} else 'smu.OFF'):
+                    raise ValueError('Stored AUTO differs from sweep setup')
+                if expected_ilimit is None:
+                    if six(Decimal(fields['ilimit.level'])) != six(Decimal(before['ilimit'])):
+                        raise ValueError('Stored source compliance changed')
+                    row['compliance_representation'] = 'queried_six_significant'
+                else:
+                    requested_ilimit = Decimal(format(float(expected_ilimit), '.17g'))
+                    if (six(Decimal(before['ilimit'])) != six(requested_ilimit)
+                            or Decimal(fields['ilimit.level']) not in config_encodings(requested_ilimit)):
+                        raise ValueError('Stored source compliance changed')
+                    row['compliance_representation'] = 'requested_or_binary32_seven_significant'
+                if before['auto'] in {'0', 'OFF'} and r != Decimal(before['range']):
+                    raise ValueError('Stored fixed range differs from sweep setup')
+                if 'range' in fields and Decimal(fields['range']) != r:
+                    raise ValueError('Stored range differs from recalled range')
+                if six(recalled) != Decimal(str(returned)):
+                    raise ValueError('Stored/recalled level does not corroborate list readback')
+                request = Decimal(format(requested, '.17g'))
+                if (six(request) == Decimal(str(returned))
+                        and level in config_encodings(request)):
+                    model = request
+                    row['representation'] = 'unquantized_six_significant'
+                else:
+                    quantum = grids[r]
+                    quotient = request / quantum
+                    lower = quotient.to_integral_value(rounding=ROUND_FLOOR)
+                    fraction = quotient - lower
+                    if fraction == Decimal('0.5'):
+                        raise ValueError('Ambiguous nearest source-grid tie')
+                    nearest = (lower + (1 if fraction > Decimal('0.5') else 0)) * quantum
+                    if six(nearest) != Decimal(str(returned)):
+                        raise ValueError('Same-index documented source-grid mismatch')
+                    row['representation'] = 'nearest_source_grid'
+                    row['resolution_V'] = str(quantum)
+                    model = nearest
+                # TSP settings render seven significant digits; never double-round 7 -> 6.
+                if level not in config_encodings(model):
+                    raise ValueError('Stored seven-significant level does not corroborate representation')
+        finally:
+            # No output enable: restore final zero list configuration when present.
+            if values[-1] == 0:
+                smu.write(f':SOUR:CONF:LIST:REC "VoltCustomSweepList",{len(values)}')
+            else:
+                smu.write(':SOUR:VOLT:LEV ' + before['level'])
+            proof['source_config_after'] = self._native_source_snapshot(smu)
+            after = proof['source_config_after']
+            if any(before[k] != after[k] for k in ('function', 'auto', 'ilimit', 'readback')):
+                raise ValueError('Source configuration not preserved after recall proof')
+            if Decimal(after['level']) != (Decimal(0) if values[-1] == 0 else Decimal(before['level'])):
+                raise ValueError('Source level restoration failed')
+        if len(json.dumps(proof).encode()) > 700000:
+            raise ValueError('Native proof exceeds bounded metadata budget')
+
+    def _verify_native_voltage_list_output_off(self, smu, voltages: Sequence[float], expected_ilimit=None) -> dict[str, Any]:
+        import hashlib
+        from pathlib import Path
+        proof: dict[str, Any] = {'verified': False, 'readback_significant_digits': 6,
+            'deployment': {'driver_path': str(Path(__file__).resolve()),
+                           'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                           'integrity_revision': 'native-list-stored-range-proof-v2',
+                           'physical_qualified': False}}
+        self._last_native_list_evidence = proof
+        original_timeout = getattr(smu, 'timeout', None)
+        if original_timeout is not None:
+            smu.timeout = max(original_timeout, 90000)
+        try:
+            proof['output_before'] = smu.query(':OUTP?').strip()
+            if proof['output_before'].upper() not in {'0', 'OFF'}:
+                raise ValueError('Native voltage list verification requires output OFF')
+            values = [float(v) for v in voltages]
+            proof['expected_count'] = len(values)
+            if not values or len(values) > 2500 or not all(math.isfinite(v) and abs(v) <= 210 for v in values):
+                raise ValueError('Native voltage list requires 1..2500 finite values')
+            proof['source_config_before'] = self._native_source_snapshot(smu)
+            if proof['source_config_before']['function'].strip('"').upper() != 'VOLT':
+                raise ValueError('Source function must be VOLT')
+            if proof['source_config_before']['auto'].upper() not in {'0', '1', 'OFF', 'ON'}:
+                raise ValueError('Unknown source AUTO state')
+            if proof['source_config_before']['readback'].upper() not in {'1', 'ON'}:
+                raise ValueError('Native sweep requires source readback ON')
+            self._write_voltage_source_list(smu, values)
+            proof['uploads'] = self._last_native_list_evidence['uploads']
+            self._last_native_list_evidence = proof
+            proof['raw_count'] = smu.query(':SOUR:LIST:VOLT:POIN?').strip()
+            proof['raw_readback'] = smu.query(':SOUR:LIST:VOLT?').strip()
+            proof['raw_error'] = smu.query(':SYST:ERR?').strip()
+            count = float(proof['raw_count'])
+            actual = [float(v.strip()) for v in proof['raw_readback'].split(',')]
+            # Returned values are proved against recalled same-index configuration.
+            if (count != len(values) or len(actual) != len(values)
+                    or not all(math.isfinite(v) for v in actual)
+                    or int(proof['raw_error'].split(',', 1)[0]) != 0):
+                raise ValueError('Native voltage list count/ordered six-significant readback mismatch')
+            self._prove_native_source_indices(smu, values, actual, proof, expected_ilimit=expected_ilimit)
+            proof['raw_config_error'] = smu.query(':SYST:ERR?').strip()
+            if int(proof['raw_config_error'].split(',', 1)[0]) != 0:
+                raise ValueError('Native configuration recall/query error')
+            proof['actual_count'] = int(count)
+            proof['verified'] = True
+        except Exception as exc:
+            proof['failure'] = str(exc)
+            if isinstance(exc, NativeIntegrityError):
+                proof['upload_failure'] = exc.evidence
+            raise NativeIntegrityError('Native voltage list verification failed', proof) from exc
+        finally:
+            if original_timeout is not None:
+                smu.timeout = original_timeout
+            self._last_native_list_evidence = proof
+            try:
+                smu.write(':OUTP OFF')
+                proof['output_after'] = smu.query(':OUTP?').strip()
+                if proof['output_after'].upper() not in {'0', 'OFF'}:
+                    raise ValueError('Output OFF readback mismatch')
+            except Exception as exc:
+                proof['cleanup_failure'] = str(exc)
+                proof['verified'] = False
+                raise NativeIntegrityError('Native voltage list OFF cleanup failed', proof) from exc
+        return proof
+
     def _write_voltage_source_list(self, smu, voltages: Sequence[float]) -> None:
         """Write a 2450 voltage source list, chunking around SCPI list limits."""
         if len(voltages) > 2500:
             raise ValueError("The Keithley 2450 source-list limit is 2500 points.")
 
-        # Keep each SCPI command comfortably below the 2450 parser/input-buffer
-        # limit. Negative values add one character each; 100-point chunks can
-        # silently reject the initial list command while a shorter :APP command
-        # succeeds, causing only the tail of a sweep to execute.
-        chunk_size = 50
-        for start in range(0, len(voltages), chunk_size):
-            chunk = voltages[start:start + chunk_size]
-            payload = ",".join(f"{float(value):.12g}" for value in chunk)
-            command = ":SOUR:LIST:VOLT" if start == 0 else ":SOUR:LIST:VOLT:APP"
-            smu.write(f"{command} {payload}")
+        tokens = [format(float(value), '.17g') for value in voltages]
+        termination = getattr(smu, 'write_termination', None) or '\n'
+        start = 0
+        evidence = {'expected_count': len(tokens), 'uploads': []}
+        self._last_native_list_evidence = evidence
+        while start < len(tokens):
+            header = ':SOUR:LIST:VOLT' if start == 0 else ':SOUR:LIST:VOLT:APP'
+            chunk = []
+            for token in tokens[start:start + 100]:
+                candidate = header + ' ' + ','.join(chunk + [token])
+                if len((candidate + termination).encode('ascii')) > 256:
+                    break
+                chunk.append(token)
+            if not chunk:
+                raise RuntimeError('Native voltage list token exceeds byte bound')
+            text = header + ' ' + ','.join(chunk)
+            smu.write(text)
+            start += len(chunk)
+            raw_count = smu.query(':SOUR:LIST:VOLT:POIN?').strip()
+            raw_error = smu.query(':SYST:ERR?').strip()
+            evidence['uploads'].append({'command': text, 'bytes_with_termination':
+                len((text + termination).encode('ascii')), 'expected_count': start,
+                'raw_count': raw_count, 'raw_error': raw_error})
+            try:
+                valid = float(raw_count) == start and int(raw_error.split(',', 1)[0]) == 0
+            except (ValueError, OverflowError):
+                valid = False
+            if not valid:
+                raise NativeIntegrityError('Native voltage list upload count/error mismatch', evidence)
 
     def _read_trace_records(
         self,
@@ -835,57 +1094,71 @@ class Driver:
         delay_s: float,
         buffer_name: str = "defbuffer1",
     ) -> list[dict[str, float | None]]:
-        """Read source/current/time triples from a 2450 trace buffer."""
+        """Require exact native count and finite ordered V/I/REL triples; no synthesis."""
+        evidence: dict[str, Any] = {'expected_count': len(voltages),
+            'list_proof': getattr(self, '_last_native_list_evidence', None)}
+        self._last_native_trace_evidence = evidence
         try:
-            raw_count = smu.query(f':TRAC:ACT? "{buffer_name}"').strip()
-            point_count = int(float(raw_count))
-        except Exception:
-            point_count = len(voltages)
-
-        point_count = max(0, min(point_count, len(voltages)))
-        if point_count <= 0:
-            point_count = len(voltages)
-
-        raw = smu.query(
-            f':TRAC:DATA? 1, {point_count}, "{buffer_name}", SOUR, READ, REL'
-        ).strip()
-        values = [part.strip() for part in raw.split(",") if part.strip()]
-        records: list[dict[str, float | None]] = []
-
-        for index in range(0, len(values), 3):
-            group = values[index:index + 3]
-            if len(group) < 3:
-                continue
-            try:
-                v_meas = float(group[0])
-                i_meas = float(group[1])
-                timestamp = float(group[2])
-            except ValueError:
-                continue
-            voltage_index = len(records)
-            v_cmd = voltages[voltage_index] if voltage_index < len(voltages) else v_meas
-            records.append(
-                _record(
-                    timestamp=timestamp,
-                    v_cmd=v_cmd,
-                    v_meas=v_meas,
-                    i_meas=i_meas,
-                    cycle_number=float(voltage_index),
-                )
-            )
-
-        if records:
+            evidence['raw_count'] = smu.query(f':TRAC:ACT? "{buffer_name}"').strip()
+            count = float(evidence['raw_count'])
+            if not math.isfinite(count) or count != len(voltages) or count <= 0:
+                raise ValueError('Native trace count differs from expected list count')
+            point_count = int(count)
+            # One giant USB/native reply was truncated despite ACT=553 and
+            # interrupted the query (-410). Read contiguous bounded windows,
+            # never retry a failed/truncated query or infer missing samples.
+            evidence['trace_window_record_limit'] = 100
+            evidence['trace_windows'] = []
+            evidence['raw_trace'] = ''
+            values = []
+            raw_windows = []
+            for start in range(1, point_count + 1, 100):
+                end = min(point_count, start + 99)
+                command = f':TRAC:DATA? {start}, {end}, "{buffer_name}", SOUR, READ, REL'
+                window = {'start': start, 'end': end, 'command': command}
+                evidence['trace_windows'].append(window)
+                try:
+                    window['raw_trace'] = smu.query(command).strip()
+                except Exception as query_exc:
+                    window['query_failure'] = str(query_exc)
+                    raise
+                raw_windows.append(window['raw_trace'])
+                evidence['raw_trace'] = ','.join(raw_windows)
+                parts = window['raw_trace'].split(',')
+                if len(parts) != 3 * (end - start + 1) or any(not part.strip() for part in parts):
+                    raise ValueError('Native trace window requires exactly expected V/I/time triples')
+                chunk = [float(part.strip()) for part in parts]
+                if not all(math.isfinite(v) for v in chunk):
+                    raise ValueError('Native trace window has nonfinite V/I/time')
+                # Validate inside each window AND across the window boundary.
+                times = ([values[-1]] if values else []) + chunk[2::3]
+                if any(t < 0 for t in times) or any(b <= a for a, b in zip(times, times[1:])):
+                    raise ValueError('Native trace relative timestamps are not strictly monotonic')
+                values.extend(chunk)
+                window['validated_records'] = end - start + 1
+            if len(values) != 3 * point_count:
+                raise ValueError('Native trace requires exactly expected complete V/I/time triples')
+            evidence['raw_error'] = smu.query(':SYST:ERR?').strip()
+            if int(evidence['raw_error'].split(',', 1)[0]) != 0:
+                raise ValueError('Native trace instrument error')
+            evidence['actual_count'] = point_count
+            evidence['time_provenance'] = 'native_buffer_REL'
+            records = []
+            for index in range(point_count):
+                v_meas, i_meas, timestamp = values[3 * index:3 * index + 3]
+                record = _record(timestamp=timestamp, v_cmd=voltages[index],
+                    v_meas=v_meas, i_meas=i_meas, cycle_number=float(index))
+                record['native_integrity'] = evidence if index == 0 else {'evidence_row_index': 0}
+                records.append(record)
             return records
-
-        return [
-            _record(
-                timestamp=float(index) * delay_s,
-                v_cmd=float(voltage),
-                i_meas=None,
-                cycle_number=float(index),
-            )
-            for index, voltage in enumerate(voltages)
-        ]
+        except Exception as exc:
+            evidence['failure'] = str(exc)
+            if 'raw_error' not in evidence:
+                try:
+                    evidence['raw_error'] = smu.query(':SYST:ERR?').strip()
+                except Exception as diagnostic_exc:
+                    evidence['diagnostic_failure'] = str(diagnostic_exc)
+            raise NativeIntegrityError('Native trace integrity failure', evidence) from exc
 
     def _write(self, command: str, adr: str | None = None) -> None:
         """Send one SCPI command."""
