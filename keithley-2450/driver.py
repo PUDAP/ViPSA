@@ -972,15 +972,14 @@ class Driver:
                 if six(recalled) != Decimal(str(returned)):
                     raise ValueError('Stored/recalled level does not corroborate list readback')
                 request = Decimal(format(requested, '.17g'))
-                # The list readback is six significant digits, while stored TSP
-                # source levels are seven significant digits (or binary32 then
-                # seven-digit ASCII). Compare the readback to that validated
-                # stored representation; directly rounding the host double can
-                # disagree by one final digit at a decimal tie.
-                if (level in config_encodings(request)
-                        and six(level) == Decimal(str(returned))):
+                # List readback/recalled level agreement was checked above at
+                # the instrument's query precision. Independently require the
+                # stored seven-significant TSP level (or binary32 encoding) to
+                # match this exact requested index. The 2450's six-digit query
+                # rendering is not a single host-reproducible tie rule.
+                if level in config_encodings(request):
                     model = request
-                    row['representation'] = 'stored_seven_to_readback_six_significant'
+                    row['representation'] = 'stored_seven_with_matching_recalled_readback'
                 else:
                     quantum = grids[r]
                     quotient = request / quantum
