@@ -917,13 +917,18 @@ class Driver:
         return fields
 
     def _prove_native_source_indices(self, smu, values, actual, proof, expected_ilimit=None):
-        from decimal import Decimal, ROUND_FLOOR
+        from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
         import json
         # Manufacturer 2450 datasheet p8, SOURCE resolution, not accuracy tolerance.
         grids = {Decimal('0.02'): Decimal('0.0000005'), Decimal('0.2'): Decimal('0.000005'),
                  Decimal('2'): Decimal('0.00005'), Decimal('20'): Decimal('0.0005'),
                  Decimal('200'): Decimal('0.005')}
-        six = lambda value: Decimal(format(float(value), '.6g'))
+        def six(value):
+            value = Decimal(value)
+            if value == 0:
+                return Decimal(0)
+            quantum = Decimal(1).scaleb(value.copy_abs().adjusted() - 5)
+            return value.quantize(quantum, rounding=ROUND_HALF_UP)
         def config_encodings(value):
             # Captured TSP settings can expose binary32 storage before seven-digit ASCII.
             # This is a discrete encoding check, never a widened voltage tolerance.
@@ -967,10 +972,15 @@ class Driver:
                 if six(recalled) != Decimal(str(returned)):
                     raise ValueError('Stored/recalled level does not corroborate list readback')
                 request = Decimal(format(requested, '.17g'))
-                if (six(request) == Decimal(str(returned))
-                        and level in config_encodings(request)):
+                # The list readback is six significant digits, while stored TSP
+                # source levels are seven significant digits (or binary32 then
+                # seven-digit ASCII). Compare the readback to that validated
+                # stored representation; directly rounding the host double can
+                # disagree by one final digit at a decimal tie.
+                if (level in config_encodings(request)
+                        and six(level) == Decimal(str(returned))):
                     model = request
-                    row['representation'] = 'unquantized_six_significant'
+                    row['representation'] = 'stored_seven_to_readback_six_significant'
                 else:
                     quantum = grids[r]
                     quotient = request / quantum
