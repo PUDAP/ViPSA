@@ -93,6 +93,7 @@ class Driver:
         """Return a fixed position payload for edge telemetry."""
         return {"x": 0.0, "y": 0.0, "z": 0.0}
 
+
     # Public driver interface
 
     @command
@@ -177,7 +178,6 @@ class Driver:
         func = self._normalize_function(function)
         numeric = float(value)
         if func == "VOLT":
-            self._write(f":SENS:CURR:PROT {numeric:.12g}")
             self._write(f":SOUR:VOLT:ILIM {numeric:.12g}")
             return
         self._write(f":SENS:VOLT:PROT {numeric:.12g}")
@@ -222,6 +222,11 @@ class Driver:
                 break
             errors.append(msg)
         return errors
+        
+    @command
+    def get_output(self) -> str:
+        "Returns whether the output is on"
+        return self._query(":OUTP?")
 
     @command
     def read_errors(self) -> list[str]:
@@ -329,7 +334,7 @@ class Driver:
             smu.write(":ROUT:TERM REAR")
             smu.write(":SOUR:FUNC VOLT")
             smu.write(':SENS:FUNC "CURR"')
-            smu.write(f":SENS:CURR:PROT {float(current_compliance):.12g}")
+            # 2450 voltage-source compliance is SOUR:VOLT:ILIM (not SENS:CURR:PROT).
             smu.write(f":SOUR:VOLT:ILIM {float(current_compliance):.12g}")
 
             if voltage_range is not None:
@@ -479,7 +484,7 @@ class Driver:
             smu.write(":SOUR:FUNC VOLT")
             smu.write(":SOUR:VOLT:READ:BACK ON")
             smu.write(':SENS:FUNC "CURR"')
-            smu.write(f":SENS:CURR:PROT {float(current_compliance):.12g}")
+            # 2450 voltage-source compliance is SOUR:VOLT:ILIM (not SENS:CURR:PROT).
             smu.write(f":SOUR:VOLT:ILIM {float(current_compliance):.12g}")
 
             if voltage_range is not None:
