@@ -1,0 +1,13 @@
+# Auditing standard versus exploratory switching recipes
+
+## Reusable distinction
+
+Do not pool a within-SET-sweep `I_return(+0.1 V)/I_forward(+0.1 V)` ratio with an independently acquired delayed `I_after_SET(+0.1 V)/I_after_RESET(+0.1 V)` ratio. The former measures sweep hysteresis under that path; the latter tests retained, recoverable state separation. Compare identical read bias, read compliance, timing, polarity, and acquisition method. Report nominal compliance separately from measured current and delivered energy. A run with 30 complete SET/RESET commands may contain pinned RESET/short-like devices; count them as failures in yield rather than proof of endurance.
+
+## Session-specific illustration: Pratap CsFAPbI3 Substrate 16 and optimization runs
+
+The Substrate 16 data package at `data/pratap_samples/runs/substrate_16_data_saving_pattern_16_devices_20261001/substrate 16/` contains `device N/30/pair_device_N_On_Off_Ratio_VALUES.csv` for N=1..16. Its packaging helper `data/pratap_samples/scripts/package_substrate_2_devices_1_to_16.py`, `standard30()` lines 83–87, defines OFF as SET-forward +0.1 V and ON as SET-return +0.1 V. That is a same-sweep proxy, not delayed independently verified SET/RESET memory. Four devices (4, 10, 11, 15) met the existing screen of RESET peaks >=9.5 mA on >=15/30 cycles; see `package_manifest.json`. Among the other 12, the per-cycle proxy median was ~96.8× over 360 cycles (all >=5×), but this does not establish delayed nonvolatile ON/OFF. The within-device log10-current standard deviation median was ~0.15 ON and ~0.36 OFF across those 12, suggesting OFF variation as a testable lever, not a proven causal explanation. Recompute these quantities from the 16 device CSVs if their canonical status changes.
+
+`data/pratap_samples/optimization_learnings_20260929.md` describes the earlier optimization, where an isolated delayed ~170.5× candidate failed exact-condition repeats. `runs/optimization_sub_2/device_wiki/campaign-learnings.md` documents a later +2 V/300 µA candidate with two retained/recovered pairs but failed RESET recovery on the third, and manual-contact SET whose early µA response relaxed to sub-nA delayed reads. Neither is a replacement for a matched incumbent.
+
+For prospective interstitial-site comparisons, retain a standard anchor on spatially separated sites, change one SET or RESET factor per arm, interleave anchor repeats, and reserve untouched devices for held-out validation. Predeclare a delayed independent ON/OFF target, non-inferiority bound on within-device log-current spread, minimum repeated SET/RESET/retention performance, and short-like yield denominator before looking at the best curve. Do not start endurance from a transient or compliance plateau.
