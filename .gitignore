@@ -1,0 +1,10 @@
+# Local credentials and settings: never commit
+.env
+*.local.bat
+
+# Python
+.venv/
+__pycache__/
+
+# Edge logs written by start_all_edges.sh
+logs/
